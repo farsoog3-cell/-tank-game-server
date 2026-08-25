@@ -11,21 +11,27 @@ const io = new Server(server, {
   }
 });
 
-io.on('connection', (socket) => {
-  console.log(`مستخدم متصل: ${socket.id}`);
+// تخزين بيانات اللاعبين المتصلين
+const players = {};
 
-  // الانضمام لغرفة معينة
-  socket.on('joinRoom', (roomName) => {
-    socket.join(roomName);
-    console.log(`المستخدم ${socket.id} انضم إلى الغرفة: ${roomName}`);
+io.on('connection', (socket) => {
+  console.log(`لاعب متصل جديد: ${socket.id}`);
+
+  // استقبال بيانات موقع اللاعب وإرسالها لباقي اللاعبين
+  socket.on('playerMove', (data) => {
+    players[socket.id] = data;
+    socket.broadcast.emit('updatePlayers', players);
   });
 
+  // عند انقطاع اتصال اللاعب
   socket.on('disconnect', () => {
-    console.log(`مستخدم غادر: ${socket.id}`);
+    console.log(`انقطع اتصال اللاعب: ${socket.id}`);
+    delete players[socket.id];
+    io.emit('playerDisconnected', socket.id);
   });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`السيرفر يعمل على المنفذ ${PORT}`);
+  console.log(`السيرفر يعمل بنجاح على المنفذ: ${PORT}`);
 });
