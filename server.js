@@ -1,61 +1,91 @@
-const io = require('socket.io')(3000, {
-  cors: { origin: "*" }
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
 });
 
-const rooms = {};
+let rooms = {}; // تخزين الغرف واللاعبين فيها
 
 io.on('connection', (socket) => {
-  console.log('لاعب متصل:', socket.id);
+    console.log('مستخدم متصل:', socket.id);
 
-  // إرسال الغرف المتاحة حالياً عند الاتصال
-  socket.emit('room-list', Object.keys(rooms));
+    // إرسال قائمة الغرف المتاحة للمستخدم فور اتصاله
+    updateRoomsList();
 
-  socket.on('create-room', (roomName) => {
-    if (!rooms[roomName]) {
-      rooms[roomName] = { players: [socket.id] };
-      socket.join(roomName);
-      socket.room = roomName;
-      console.log(`تم إنشاء الغرفة: ${roomName}`);
-      
-      io.emit('room-list', Object.keys(rooms));
-      socket.emit('room-joined', roomName);
-    } else {
-      socket.emit('error-msg', 'اسم الغرفة موجود مسبقاً!');
-    }
-  });
+    // إنشاء غرفة جديدة
+    socket.on('create-room', (roomName) => {
+        if (rooms[roomName]) {
+            socket.emit('error-msg', 'هذه الغرفة موجودة بالفعل، اختر اسمًا آخر!');
+            return;
+        }
 
-  socket.on('join-room', (roomName) => {
-    if (rooms[roomName] && rooms[roomName].players.length < 2) {
-      rooms[roomName].players.push(socket.id);
-      socket.join(roomName);
-      socket.room = roomName;
-      console.log(`انضم لاعب إلى الغرفة: ${roomName}`);
-      
-      socket.emit('room-joined', roomName);
-      io.to(roomName).emit('start-battle');
-    } else {
-      socket.emit('error-msg', 'الغرفة غير موجودة أو ممتلئة بالكامل!');
-    }
-  });
+        rooms[roomName] = {
+            players: [socket.id],
+            status: 'waiting'
+        };
 
-  socket.on('move-command', (data) => {
-    if (socket.room) {
-      socket.to(socket.room).emit('player-sync', data);
-    }
-  });
+        socket.join(roomName);
+        socket.roomName = roomName;
+        
+        socket.emit('room-joined', roomName);
+        updateRoomsList();
+        console.log(`تم إنشاء الغرفة: ${roomName} بواسطة ${socket.id}`);
+    });
 
-  socket.on('buy-tank', (data) => {
-    if (socket.room) {
-      socket.to(socket.room).emit('player-buy', data);
-    }
-  });
+    // الانضمام إلى غرفة موجودة
+    socket.on('join-room', (roomName) => {
+        if (!rooms[roomName]) {
+            socket.emit('error-msg', 'هذه الغرفة غير موجودة!');
+            return;
+        }
 
-  socket.on('disconnect', () => {
-    if (socket.room && rooms[socket.room]) {
-      io.to(socket.room).emit('opponent-disconnected');
-      delete rooms[socket.room];
-      io.emit('room-list', Object.keys(rooms));
-    }
-    console.log('انقطع اتصال اللاعب:', socket.id);
-  });
+        if (rooms[roomName].players.length >= 2) {
+            socket.emit('error-msg', 'الغرفة ممتلئة بالفعل!');
+            return;
+        }
+
+        rooms[roomName].players.push(socket.id);
+        rooms[roomName].status = 'playing';
+
+        socket.join(roomName);
+        socket.roomName = roomName;
+
+        socket.emit('room-joined', roomName);
+        updateRoomsList();
+
+        // إشعار اللاعبين بأن المعركة قد بدأت لاكتمال العدد (لاعبين اثنين)
+        io.to(roomName).emit('start-battle');
+        console.log(`انضم المستخدم ${socket.id} إلى الغرفة: ${roomName} وبدأت المعركة`);
+    });
+
+    // التعامل مع مغادرة اللاعب أو انقطاع الاتصال
+    socket.on('disconnect', () => {
+        console.log('مستخدم انقطع اتصاله:', socket.id);
+        if (socket.roomName && rooms[socket.roomName]) {
+            io.to(socket.roomName).emit('opponent-disconnected');
+            delete rooms[socket.roomName];
+            updateRoomsList();
+        }
+    });
+});
+
+function updateRoomsList() {
+    // إرسال أسماء الغرف التي تنتظر لاعبين فقط
+    const availableRooms = Object.keys(rooms).filter(r => rooms[r].status === 'waiting');
+    io.emit('room-list', availableRooms);
+}
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`السيرفر يعمل بنجاح على المنفذ ${PORT}`);
 });
