@@ -42,12 +42,8 @@ io.on('connection', (socket) => {
         socket.join(roomId);
         socket.roomId = roomId;
 
-        // **هون الإضافة الجوهرية:** إرسال رسالة نجاح الإنشاء للمنظم حصراً ليتم نقله لغرفة الانتظار جوا
         socket.emit('room_joined_success', { isHost: true, room: newRoom });
-        
-        // تحديث القائمة العامة للكل
         io.emit('update_rooms_list', rooms);
-        console.log(`تم إنشاء الغرفة ${roomName} بواسطة المستخدم ${socket.id} وتم إدخاله إليها.`);
     });
 
     // الانضمام إلى غرفة موجودة
@@ -105,6 +101,7 @@ io.on('connection', (socket) => {
         const room = rooms.find(r => r.id === roomId);
         if (!room || room.hostId !== socket.id) return;
 
+        // التأكد من أن اللاعب الثاني مستعد أو في الغرفة (إذا اكتفى لاعبين)
         room.gameStarted = true;
         io.to(roomId).emit('game_started');
 
@@ -125,10 +122,12 @@ io.on('connection', (socket) => {
         let room = rooms.find(r => r.id === roomId);
 
         if (room) {
+            // إذا كان المنظم هو من غادر، أغلق الغرفة تماماً
             if (room.hostId === sock.id) {
                 io.to(roomId).emit('room_closed');
                 rooms = rooms.filter(r => r.id !== roomId);
             } else {
+                // إزالة اللاعب العادي من الغرفة
                 room.players = room.players.filter(p => p.id !== sock.id);
                 io.to(roomId).emit('room_players_update', room);
             }
