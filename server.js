@@ -20,7 +20,7 @@ io.on('connection', (socket) => {
   console.log(`لاعب متصل: ${socket.id}`);
   socket.emit('update_rooms_list', getRoomsList());
 
-  // إنشاء غرفة مباشرة واختيار العلم
+  // إنشاء الغرفة والانتقال لنافذة الانتظار فوراً
   socket.on('create_room', ({ roomName, flag }) => {
     const roomId = 'room_' + Math.random().toString(36).substr(2, 6);
     rooms[roomId] = {
@@ -36,14 +36,15 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.roomId = roomId;
     io.emit('update_rooms_list', getRoomsList());
-    socket.emit('room_joined_success', { room: rooms[roomId], isHost: true });
+    
+    // إرسال رد فوراً لفتح نافذة الانتظار للمنشئ
+    socket.emit('room_created_and_waiting', rooms[roomId]);
   });
 
-  // انضمام الصديق مباشرة بدون طلب موافقة
+  // انضمام الصديق للغرفة
   socket.on('join_room', ({ roomId, flag }) => {
     const room = rooms[roomId];
     if (room && room.status === 'waiting' && room.players.length < 2) {
-      // التأكد من اختيار علم مخالف أو المتاح
       const hostFlag = room.players[0].flag;
       const friendFlag = flag || (hostFlag === 'green' ? 'red' : 'green');
 
@@ -65,7 +66,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // تبديل حالة الاستعداد للصديق
+  // تبديل حالة الاستعداد
   socket.on('toggle_ready', () => {
     const room = rooms[socket.roomId];
     if (room) {
@@ -87,7 +88,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // مزامنة حركة وتحركات الدبابات فورياً بين اللاعبين
+  // مزامنة حركة الدبابات فورياً
   socket.on('tank_sync_action', (data) => {
     if (socket.roomId) {
       socket.to(socket.roomId).emit('tank_sync_action', data);
