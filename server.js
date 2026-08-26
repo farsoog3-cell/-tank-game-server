@@ -8,61 +8,37 @@ app.use(cors());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*", // يمكنك تحديد النطاق الخاص بك لاحقاً للأمان
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// تخزين حالات اللاعبين والغرف
-const players = {};
-
 io.on('connection', (socket) => {
-  console.log(`لاعب متصل جديد: ${socket.id}`);
+  console.log(`مستخدم متصل: ${socket.id}`);
 
-  // تسجيل اللاعب الجديد في اللعبة
-  players[socket.id] = {
-    id: socket.id,
-    x: 0,
-    z: 0,
-    money: 1000,
-    oil: 0,
-    tanks: []
-  };
+  // إنشاء غرفة جديدة
+  socket.on('create_room', () => {
+    const roomCode = Math.random().toString(36).substring(2, 7).toUpperCase(); // توليد كود عشوائي من 5 أحرف
+    socket.join(roomCode);
+    console.log(`المستخدم ${socket.id} أنشأ الغرفة: ${roomCode}`);
+    socket.emit('room_joined', { roomCode, host: socket.id });
+  });
 
-  // إرسال البيانات الحالية للاعبين الجدد
-  socket.emit('current_players', players);
-  
-  // إعلام الجميع بانضمام لاعب جديد
-  socket.broadcast.emit('player_joined', players[socket.id]);
-
-  // استقبال تحديثات حركة اللاعب ودباباته
-  socket.on('player_movement', (movementData) => {
-    if (players[socket.id]) {
-      players[socket.id].x = movementData.x;
-      players[socket.id].z = movementData.z;
-      // إرسال التحديث لبقية اللاعبين
-      socket.broadcast.emit('player_moved', players[socket.id]);
+  // الانضمام لغرفة موجودة
+  socket.on('join_room', (roomCode) => {
+    const room = io.sockets.adapter.rooms.get(roomCode);
+    if (room) {
+      socket.join(roomCode);
+      console.log(`المستخدم ${socket.id} انضم للغرفة: ${roomCode}`);
+      io.to(roomCode).emit('room_joined', { roomCode, message: 'انضم لاعب جديد' });
+    } else {
+      socket.emit('error_message', 'هذه الغرفة غير موجودة!');
     }
   });
 
-  // استقبال إنشاء وحدة جديدة (دبابة / مبنى)
-  socket.on('spawn_unit', (unitData) => {
-    socket.broadcast.emit('unit_spawned', {
-      playerId: socket.id,
-      ...unitData
-    });
-  });
-
-  // عند انقطاع الاتصال
   socket.on('disconnect', () => {
-    console.log(`لاعب غادر اللعبة: ${socket.id}`);
-    delete players[socket.id];
-    io.emit('player_disconnected', socket.id);
+    console.log(`مستخدم غادر: ${socket.id}`);
   });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`السيرفر يعمل بنجاح على المنفذ: ${PORT}`);
+server.listen(3000, () => {
+  console.log('السيرفر يعمل على المنفذ 3000');
 });
