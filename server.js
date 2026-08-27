@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -16,7 +16,7 @@ let rooms = [];
 io.on('connection', (socket) => {
     console.log(`مستخدم متصل: ${socket.id}`);
 
-    // إرسال قائمة الغرف المتاحة للجميع عند الاتصال
+    // إرسال قائمة الغرف المتاحة للمستخدم الجديد فور اتصالها
     socket.emit('update_rooms_list', rooms);
 
     // إنشاء غرفة جديدة
@@ -32,7 +32,7 @@ io.on('connection', (socket) => {
             name: roomName,
             hostId: socket.id,
             players: [
-                { id: socket.id, flag: playerFlag, ready: true }
+                { id: socket.id, flag: playerFlag, ready: true } // المنظم مستعد تلقائياً
             ],
             gameStarted: false
         };
@@ -42,7 +42,7 @@ io.on('connection', (socket) => {
         socket.roomId = roomId;
 
         socket.emit('room_joined_success', { isHost: true, room: newRoom });
-        io.emit('update_rooms_list', rooms); // تحديث القائمة لكل اللاعبين المتصلين لتظهر الغرفة للجميع
+        io.emit('update_rooms_list', rooms); // تحديث القائمة لكل اللاعبين لتظهر الغرفة للجميع
     });
 
     // الانضمام إلى غرفة موجودة (بحد أقصى لاعبين اثنين لكل غرفة)
@@ -77,7 +77,7 @@ io.on('connection', (socket) => {
         io.emit('update_rooms_list', rooms);
     });
 
-    // تبديل حالة الاستعداد
+    // تبديل حالة الاستعداد للاعب الثاني
     socket.on('toggle_ready', () => {
         const roomId = socket.roomId;
         if (!roomId) return;
@@ -92,7 +92,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // بدء المعركة من قبل المنظم
+    // بدء المعركة من قبل المنظم (Host)
     socket.on('start_game', () => {
         const roomId = socket.roomId;
         if (!roomId) return;
@@ -103,12 +103,12 @@ io.on('connection', (socket) => {
         room.gameStarted = true;
         io.to(roomId).emit('game_started');
 
-        // إزالة الغرفة من القائمة العامة بمجرد بدء اللعبة
+        // إزالة الغرفة من القائمة العامة بمجرد بدء المعركة
         rooms = rooms.filter(r => r.id !== roomId);
         io.emit('update_rooms_list', rooms);
     });
 
-    // قطع الاتصال أو الخروج
+    // التعامل مع مغادرة اللاعب أو قطع الاتصال
     socket.on('disconnect', () => {
         leaveCurrentRoom(socket);
         console.log(`مستخدم غادر: ${socket.id}`);
@@ -121,9 +121,11 @@ io.on('connection', (socket) => {
 
         if (room) {
             if (room.hostId === sock.id) {
+                // إذا غادر المنظم، يتم إغلاق الغرفة وإعلام الجميع
                 io.to(roomId).emit('room_closed');
                 rooms = rooms.filter(r => r.id !== roomId);
             } else {
+                // إزالة اللاعب الثاني وتحديث الغرفة
                 room.players = room.players.filter(p => p.id !== sock.id);
                 io.to(roomId).emit('room_players_update', room);
             }
