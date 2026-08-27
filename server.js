@@ -16,12 +16,11 @@ let rooms = [];
 io.on('connection', (socket) => {
     console.log(`مستخدم متصل: ${socket.id}`);
 
-    // إرسال قائمة الغرف المتاحة للمستخدم الجديد
+    // إرسال قائمة الغرف المتاحة للجميع عند الاتصال
     socket.emit('update_rooms_list', rooms);
 
     // إنشاء غرفة جديدة
     socket.on('create_room', (data) => {
-        // مغادرة أي غرفة قديمة إن وجد
         leaveCurrentRoom(socket);
 
         const roomName = (data && data.roomName) ? data.roomName : 'غرفة معركة';
@@ -33,7 +32,7 @@ io.on('connection', (socket) => {
             name: roomName,
             hostId: socket.id,
             players: [
-                { id: socket.id, flag: playerFlag, ready: true } // المنظم مستعد تلقائياً
+                { id: socket.id, flag: playerFlag, ready: true }
             ],
             gameStarted: false
         };
@@ -43,10 +42,10 @@ io.on('connection', (socket) => {
         socket.roomId = roomId;
 
         socket.emit('room_joined_success', { isHost: true, room: newRoom });
-        io.emit('update_rooms_list', rooms);
+        io.emit('update_rooms_list', rooms); // تحديث القائمة لكل اللاعبين المتصلين لتظهر الغرفة للجميع
     });
 
-    // الانضمام إلى غرفة موجودة
+    // الانضمام إلى غرفة موجودة (بحد أقصى لاعبين اثنين لكل غرفة)
     socket.on('join_room', (data) => {
         leaveCurrentRoom(socket);
 
@@ -78,7 +77,7 @@ io.on('connection', (socket) => {
         io.emit('update_rooms_list', rooms);
     });
 
-    // تبديل حالة الاستعداد للاعب غير المنظم
+    // تبديل حالة الاستعداد
     socket.on('toggle_ready', () => {
         const roomId = socket.roomId;
         if (!roomId) return;
@@ -101,11 +100,10 @@ io.on('connection', (socket) => {
         const room = rooms.find(r => r.id === roomId);
         if (!room || room.hostId !== socket.id) return;
 
-        // التأكد من أن اللاعب الثاني مستعد أو في الغرفة (إذا اكتفى لاعبين)
         room.gameStarted = true;
         io.to(roomId).emit('game_started');
 
-        // إزالة الغرفة من القائمة العامة لأنها بدأت
+        // إزالة الغرفة من القائمة العامة بمجرد بدء اللعبة
         rooms = rooms.filter(r => r.id !== roomId);
         io.emit('update_rooms_list', rooms);
     });
@@ -122,12 +120,10 @@ io.on('connection', (socket) => {
         let room = rooms.find(r => r.id === roomId);
 
         if (room) {
-            // إذا كان المنظم هو من غادر، أغلق الغرفة تماماً
             if (room.hostId === sock.id) {
                 io.to(roomId).emit('room_closed');
                 rooms = rooms.filter(r => r.id !== roomId);
             } else {
-                // إزالة اللاعب العادي من الغرفة
                 room.players = room.players.filter(p => p.id !== sock.id);
                 io.to(roomId).emit('room_players_update', room);
             }
