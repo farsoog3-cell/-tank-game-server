@@ -7,6 +7,8 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
+
+// إعداد Socket.io مع السماح بالاتصال من أي مصدر (CORS)
 const io = new Server(server, {
     cors: {
         origin: "*",
@@ -14,74 +16,60 @@ const io = new Server(server, {
     }
 });
 
-// تخزين الغرف واللاعبين
-const rooms = {};
+// متغيرات اللعبة لإدارة اللاعبين والفرق
+let players = {};
+let playerQueue = [];
 
 io.on('connection', (socket) => {
-    console.log(`مستخدم متصل: ${socket.id}`);
+    console.log(`🔌 لاعب جديد متصل: ${socket.id}`);
 
-    // إرسال قائمة الغرف المتاحة للمستخدم الجديد
-    socket.emit('update-rooms', rooms);
+    // تخصيص الفريق للاعب الجديد (اللاعب الأول = player، الثاني = enemy)
+    let assignedTeam = 'player';
+    if (Object.keys(players).length % 2 !== 0) {
+        assignedTeam = 'enemy';
+    }
 
-    // إنشاء غرفة جديدة
-    socket.on('create-room', (data) => {
-        const roomName = data.roomName || `غرفة_${Math.floor(Math.random() * 1000)}`;
-        if (!rooms[roomName]) {
-            rooms[roomName] = {
-                host: socket.id,
-                players: [{ id: socket.id, flag: data.flag, ready: true }],
-                status: 'waiting'
-            };
-            socket.join(roomName);
-            socket.roomName = roomName;
-            
-            socket.emit('room-joined', { roomName, isHost: true, players: rooms[roomName].players });
-            io.emit('update-rooms', rooms);
-        } else {
-            socket.emit('error-msg', 'هذه الغرفة موجودة بالفعل!');
-        }
+    players[socket.id] = {
+        id: socket.id,
+        team: assignedTeam
+    };
+
+    // إرسال الفريق للاعب الحالي
+    socket.emit('assignTeam', { team: assignedTeam });
+
+    // إشعار بقية اللاعبين بانضمام لاعب جديد
+    socket.broadcast.emit('playerJoined', { playerId: socket.id, team: assignedTeam });
+
+    // 1. استقبال وتوزيع حركة الدبابات
+    socket.on('moveTank', (data) => {
+        // إرسال الإحداثيات للجميع باستثناء المرسل
+        socket.broadcast.emit('tankMoved', data);
     });
 
-    // الانضمام لغرفة موجودة
-    socket.on('join-room', (data) => {
-        const roomName = data.roomName;
-        if (rooms[roomName] && rooms[roomName].status === 'waiting') {
-            rooms[roomName].players.push({ id: socket.id, flag: data.flag, ready: false });
-            socket.join(roomName);
-            socket.roomName = roomName;
-
-            socket.emit('room-joined', { roomName, isHost: false, players: rooms[roomName].players });
-            io.to(roomName).emit('update-lobby', rooms[roomName].players);
-            io.emit('update-rooms', rooms);
-        } else {
-            socket.emit('error-msg', 'الغرفة غير موجودة أو أن المعركة قد بدأت بالفعل!');
-        }
+    // 2. استقبال وتوزيع شراء الدبابات
+    socket.on('buyTank', (data) => {
+        socket.broadcast.emit('tankBought', data);
     });
 
-    // مزامنة حركة الدبابات داخل الغرفة
-    socket.on('tankMove', (data) => {
-        if (socket.roomName) {
-            socket.to(socket.roomName).emit('updateTanks', data);
-        }
+    // 3. استقبال وتوزيع إطلاق النار / الصواريخ
+    socket.on('fireBullet', (data) => {
+        socket.broadcast.emit('bulletFired', data);
     });
 
-    // عند انقطاع الاتصال
+    // عند انفصال اللاعب
     socket.on('disconnect', () => {
-        console.log(`مستخدم انقطع اتصالـه: ${socket.id}`);
-        if (socket.roomName && rooms[socket.roomName]) {
-            rooms[socket.roomName].players = rooms[socket.roomName].players.filter(p => p.id !== socket.id);
-            if (rooms[socket.roomName].players.length === 0) {
-                delete rooms[socket.roomName];
-            } else {
-                io.to(socket.roomName).emit('update-lobby', rooms[socket.roomName].players);
-            }
-            io.emit('update-rooms', rooms);
-        }
+        console.log(`❌ انقطع اتصال اللاعب: ${socket.id}`);
+        delete players[socket.id];
     });
 });
 
-// استخدام المنفذ المخصص من الاستضافة أو البورت المحلي 3000
+// مسار فحص عمل السيرفر عند فتحه من المتصفح
+app.get('/', (req, res) => {
+    res.send('🎮 Tank Game Server is Running Successfully!');
+});
+
+// تشغيل السيرفر على البورت المحدد من الاستضافة أو 3000 محلياً
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`السيرفر يعمل بنجاح على البورت: ${PORT}`);
+    console.log(`🚀 السيرفر يعمل الآن على البورت: ${PORT}`);
 });
