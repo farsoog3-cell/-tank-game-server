@@ -14,99 +14,112 @@ const io = new Server(server, {
 const rooms = new Map();
 
 io.on('connection', (socket) => {
-    console.log(`لاعب جديد متصل: ${socket.id}`);
+    console.log(`لاعب متصل جديد: ${socket.id}`);
 
     // إرسال قائمة الغرف فور الاتصال
     sendAvailableRooms(socket);
 
-    socket.on('getRooms', () => sendAvailableRooms(socket));
+    socket.on('getRoomsList', () => sendAvailableRooms(socket));
 
-    // 1. إنشاء غرفة جديدة مع المال الابتدائي والعلم
+    // 1. إنشاء غرفة جديدة
     socket.on('createRoom', (data) => {
         const roomId = `room_${Math.random().toString(36).substring(2, 9)}`;
-        const roomName = data.name || `غرفة ${roomId}`;
+        const roomName = data.roomName || `غرفة ${roomId}`;
 
         const newRoom = {
             id: roomId,
             name: roomName,
-            hostSocketId: socket.id,
-            startMoney: data.startMoney || 500, // 200, 500, 600
-            players: [
-                { id: socket.id, flag: data.flag || 'green', role: 'host', isReady: false }
-            ],
-            status: 'waiting' // waiting, ready, playing
+            hostId: socket.id,
+            initialMoney: data.initialMoney || 500,
+            isPlaying: false,
+            host: { id: socket.id, flag: data.flag || 'green', ready: false },
+            guest: null
         };
 
         rooms.set(roomId, newRoom);
         socket.join(roomId);
 
-        socket.emit('roomCreated', { roomId, room: newRoom });
+        socket.emit('roomJoined', getRoomClientData(newRoom));
         broadcastRoomsList();
     });
 
-    // 2. انضمام صديق للغرفة
+    // 2. انضمام صديق لغرفة
     socket.on('joinRoom', (data) => {
         const room = rooms.get(data.roomId);
 
-        if (!room) return socket.emit('errorMsg', 'الغرفة غير موجودة!');
-        if (room.players.length >= 2 || room.status !== 'waiting') {
-            return socket.emit('errorMsg', 'الغرفة مكتملة أو بدأت المعركة!');
+        if (!room) {
+            return socket.emit('errorMessage', 'الغرفة غير موجودة!');
+        }
+        if (room.guest || room.isPlaying) {
+            return socket.emit('errorMessage', 'الغرفة مكتملة أو المعركة بدأت بالفعل!');
         }
 
-        const guestPlayer = {
+        room.guest = {
             id: socket.id,
-            flag: data.flag || 'red',
-            role: 'guest',
-            isReady: false
+            flag: 'red',
+            ready: false
         };
 
-        room.players.push(guestPlayer);
         socket.join(data.roomId);
-
-        // إعلام الطرفين بالتحديث
-        io.to(room.id).emit('roomUpdated', room);
+        io.to(data.roomId).emit('lobbyUpdated', getRoomClientData(room));
         broadcastRoomsList();
     });
 
-    // 3. تحديث الاستعداد (مستعد / غير مستعد) والعلم Selected
-    socket.on('toggleReady', (data) => {
+    // 3. تحديث العلم والجاهزية
+    socket.on('updatePlayerFlag', (data) => {
         const room = rooms.get(data.roomId);
         if (!room) return;
 
-        const player = room.players.find(p => p.id === socket.id);
-        if (player) {
-            player.isReady = !player.isReady;
-            if (data.flag) player.flag = data.flag;
-            
-            io.to(room.id).emit('roomUpdated', room);
+        if (room.host && room.host.id === socket.id) {
+            room.host.flag = data.flag;
+        } else if (room.guest && room.guest.id === socket.id) {
+            room.guest.flag = data.flag;
         }
+
+        io.to(room.id).emit('lobbyUpdated', getRoomClientData(room));
     });
 
-    // 4. بدء اللعبة بواسطة صاحب الغرفة عند جاهزية الطرفين
-    socket.on('startGame', (data) => {
+    socket.on('playerReadyState', (data) => {
         const room = rooms.get(data.roomId);
-        if (!room || room.hostSocketId !== socket.id) return;
+        if (!room) return;
 
-        // التأكد من وجود 2 لاعبين وجاهزيتهما
-        const allReady = room.players.length === 2 && room.players.every(p => p.isReady);
-        
-        if (allReady) {
-            room.status = 'playing';
-            io.to(room.id).emit('gameStart', room);
+        if (room.host && room.host.id === socket.id) {
+            room.host.ready = data.ready;
+        } else if (room.guest && room.guest.id === socket.id) {
+            room.guest.ready = data.ready;
+        }
+
+        io.to(room.id).emit('lobbyUpdated', getRoomClientData(room));
+    });
+
+    // 4. بدء المعركة بواسطة المضيف
+    socket.on('startGameRequest', (data) => {
+        const room = rooms.get(data.roomId);
+        if (!room || room.hostId !== socket.id) return;
+
+        if (room.host && room.guest && room.host.ready && room.guest.ready) {
+            room.isPlaying = true;
+            io.to(room.id).emit('gameStarted', getRoomClientData(room));
             broadcastRoomsList();
+        } else {
+            socket.emit('errorMessage', 'يجب أن يكون كلا اللاعبين مستعدين لبدء اللعبة!');
         }
     });
 
-    // 5. أوامر الحركة والشراء
-    socket.on('tankMove', (data) => socket.to(data.roomId).emit('enemyMove', data));
-    socket.on('buyTank', (data) => socket.to(data.roomId).emit('enemyBoughtTank', data));
+    // 5. أوامر الحركة والتزامن أثناء اللعب
+    socket.on('playerAction', (data) => {
+        socket.to(data.roomId).emit('enemyAction', data.action);
+    });
+
+    socket.on('buyTank', (data) => {
+        socket.to(data.roomId).emit('enemyBoughtTank', data);
+    });
 
     // 6. قطع الاتصال
     socket.on('disconnect', () => {
         rooms.forEach((room, roomId) => {
-            const index = room.players.findIndex(p => p.id === socket.id);
-            if (index !== -1) {
-                socket.to(roomId).emit('playerDisconnected');
+            if (room.hostId === socket.id || (room.guest && room.guest.id === socket.id)) {
+                io.to(roomId).emit('errorMessage', 'انقطع اتصال المنافس!');
                 rooms.delete(roomId);
                 broadcastRoomsList();
             }
@@ -115,26 +128,46 @@ io.on('connection', (socket) => {
 });
 
 function sendAvailableRooms(targetSocket) {
-    targetSocket.emit('roomsList', getRoomsPayload());
+    targetSocket.emit('updateRoomsList', getRoomsPayload());
 }
 
 function broadcastRoomsList() {
-    io.emit('roomsList', getRoomsPayload());
+    io.emit('updateRoomsList', getRoomsPayload());
 }
 
 function getRoomsPayload() {
-    const list = [];
-    rooms.forEach((room) => {
-        list.push({
+    const list = {};
+    rooms.forEach((room, id) => {
+        let count = 0;
+        if (room.host) count++;
+        if (room.guest) count++;
+
+        list[id] = {
             id: room.id,
             name: room.name,
-            playersCount: room.players.length,
-            startMoney: room.startMoney,
-            status: room.status // waiting, playing
-        });
+            playersCount: count,
+            initialMoney: room.initialMoney,
+            isPlaying: room.isPlaying
+        };
     });
     return list;
 }
 
+function getRoomClientData(room) {
+    let count = 0;
+    if (room.host) count++;
+    if (room.guest) count++;
+
+    return {
+        id: room.id,
+        name: room.name,
+        hostId: room.hostId,
+        initialMoney: room.initialMoney,
+        playersCount: count,
+        host: room.host,
+        guest: room.guest
+    };
+}
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server live on port ${PORT}`));
+server.listen(PORT, () => console.log(`السيرفر يعمل بنجاح على المنفذ: ${PORT}`));
