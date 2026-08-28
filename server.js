@@ -20,6 +20,9 @@ const rooms = new Map();
 io.on('connection', (socket) => {
     console.log(`لاعب جديد متصل: ${socket.id}`);
 
+    // 🔥 إرسال قائمة الغرف فور اتصال اللاعب تلقائياً
+    sendAvailableRooms(socket);
+
     // 1. إرسال قائمة الغرف المتاحة عند الطلب
     socket.on('getRooms', () => {
         sendAvailableRooms(socket);
@@ -46,7 +49,7 @@ io.on('connection', (socket) => {
         // إعلام المنشئ بنجاح العملية
         socket.emit('roomCreated', { roomId, name: roomName });
         
-        // تحديث قائمة الغرف لكل اللاعبين
+        // تحديث قائمة الغرف لكل المتصلين فوراً
         broadcastRoomsList();
         console.log(`تم إنشاء الغرفة: ${roomName} (${roomId})`);
     });
@@ -75,7 +78,7 @@ io.on('connection', (socket) => {
         room.status = 'ready'; // أصبحت الغرفة جاهزة لبدء المعركة من قبل المضيف
         socket.join(data.roomId);
 
-        // إشعار صاحب الغرفة بانضمام منافس
+        // إشعار صاحب الغرفة بانضمام المنافس لتجهيز زر البدء
         socket.to(room.hostSocketId).emit('playerJoined', {
             guestId: socket.id,
             roomId: room.id
@@ -89,7 +92,6 @@ io.on('connection', (socket) => {
     socket.on('startGame', (data) => {
         const room = rooms.get(data.roomId);
         
-        // التأكد من وجود الغرفة وأن من يطلب البدء هو المضيف فعلاً
         if (room && room.hostSocketId === socket.id) {
             room.status = 'playing';
             
@@ -130,19 +132,19 @@ io.on('connection', (socket) => {
     });
 });
 
-// دالة مخصصة لإرسال قائمة الغرف المتاحة
+// دالة لإرسال الغرف للاعب محدد
 function sendAvailableRooms(targetSocket) {
     const availableRooms = getRoomsPayload();
     targetSocket.emit('roomsList', availableRooms);
 }
 
-// دالة لتحديث القائمة لدى جميع المتصلين
+// دالة لتحديث القائمة لدى جميع المتصلين فوراً
 function broadcastRoomsList() {
     const availableRooms = getRoomsPayload();
     io.emit('roomsList', availableRooms);
 }
 
-// بناء هيكل البيانات المبعوث للعميل حول الغرف
+// تجهيز هيكل بيانات الغرف
 function getRoomsPayload() {
     const list = [];
     rooms.forEach((room) => {
@@ -156,7 +158,7 @@ function getRoomsPayload() {
     return list;
 }
 
-// تشغيل السيرفر على المنفذ المخصص (Render أو 3000 محلياً)
+// تشغيل السيرفر على المنفذ المخصص
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`السيرفر يعمل بنجاح على المنفذ: ${PORT}`);
