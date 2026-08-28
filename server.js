@@ -43,7 +43,7 @@ io.on('connection', (socket) => {
         broadcastRoomsList();
     });
 
-    // 2. انضمام صديق لغرفة
+    // 2. انضمام صديق لغرفة (تم التعديل لفتح النافذة عند الصديق فوراً)
     socket.on('joinRoom', (data) => {
         const room = rooms.get(data.roomId);
 
@@ -61,6 +61,11 @@ io.on('connection', (socket) => {
         };
 
         socket.join(data.roomId);
+
+        // إرسال حدث الانضمام للصديق فتحل لديه نافذة الانتظار
+        socket.emit('roomJoined', getRoomClientData(room));
+
+        // إرسال تحديث للغرفة ولجميع المتصفحين
         io.to(data.roomId).emit('lobbyUpdated', getRoomClientData(room));
         broadcastRoomsList();
     });
