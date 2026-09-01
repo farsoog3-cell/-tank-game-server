@@ -1,126 +1,108 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
 
 const app = express();
-app.use(cors());
-
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-let rooms = {};
+let rooms = {}; // لتخزين الغرف الحالية
 
 io.on('connection', (socket) => {
     console.log(`مستخدم متصل: ${socket.id}`);
 
+    // إرسال قائمة الغرف المتاحة
     socket.on('get_rooms', () => {
-        let roomList = Object.keys(rooms).map(id => ({
-            id: id,
-            name: rooms[id].name,
-            hostFlag: rooms[id].hostFlag,
-            guestJoined: rooms[id].guestId !== null
-        }));
-        socket.emit('rooms_list', roomList);
+        socket.emit('rooms_list', getRoomsArray());
     });
 
+    // إنشاء غرفة جديدة
     socket.on('create_room', (data) => {
-        let roomId = 'room_' + Math.random().toString(36).substr(2, 6);
+        let roomId = 'room_' + Math.random().toString(36).substring(2, 7);
         rooms[roomId] = {
             id: roomId,
-            name: data.name || 'معركة سريعة',
+            name: data.name,
             hostId: socket.id,
-            hostFlag: data.hostFlag || 'green',
+            hostFlag: data.hostFlag,
             guestId: null,
-            guestFlag: data.hostFlag === 'green' ? 'red' : 'green',
-            started: false
+            guestFlag: data.hostFlag === 'green' ? 'red' : 'green'
         };
         socket.join(roomId);
-        socket.emit('room_joined', { id: roomId, name: rooms[roomId].name, isHost: true, hostFlag: rooms[roomId].hostFlag });
-        io.emit('rooms_list', Object.keys(rooms).map(id => ({ id, name: rooms[id].name, hostFlag: rooms[id].hostFlag })));
+        socket.emit('room_joined', { id: roomId, name: data.name, isHost: true, hostFlag: data.hostFlag });
+        io.emit('rooms_list', getRoomsArray());
     });
 
+    // انضمام للغرفة
     socket.on('join_room', (data) => {
         let room = rooms[data.roomId];
         if (room && !room.guestId) {
             room.guestId = socket.id;
             socket.join(room.id);
-            socket.emit('room_joined', { id: room.id, name: room.name, isHost: false, guestFlag: room.guestFlag });
+            socket.emit('room_joined', { id: room.id, name: room.name, isHost: false, hostFlag: room.hostFlag, guestFlag: room.guestFlag });
             io.to(room.hostId).emit('room_update', { guestJoined: true });
+            io.emit('rooms_list', getRoomsArray());
         }
     });
 
+    // بدء المعركة
     socket.on('start_game', (data) => {
         let room = rooms[data.roomId];
         if (room && room.hostId === socket.id) {
-            room.started = true;
             io.to(room.id).emit('start_game');
         }
     });
 
-    socket.on('spawn_tank', (data) => {
-        let room = rooms[data.roomId];
-        if (room) {
-            let targetSocket = (socket.id === room.hostId) ? room.guestId : room.hostId;
-            if (targetSocket) {
-                io.to(targetSocket).emit('remote_tank_spawn', { x: data.x, z: data.z, type: data.type });
-            }
-        }
-    });
-
+    // مزامنة مكان وزاوية الدبابة
     socket.on('tank_move', (data) => {
-        let room = rooms[data.roomId];
-        if (room) {
-            let targetSocket = (socket.id === room.hostId) ? room.guestId : room.hostId;
-            if (targetSocket) {
-                io.to(targetSocket).emit('remote_tank_move', { index: data.index, x: data.x, y: data.y, z: data.z, rotY: data.rotY });
-            }
-        }
+        socket.broadcast.to(data.roomId).emit('remote_tank_move', data);
     });
 
+    // بناء وتوليد دبابة جديدة عند الخصم
+    socket.on('spawn_tank', (data) => {
+        socket.broadcast.to(data.roomId).emit('remote_tank_spawn', data);
+    });
+
+    // إطلاق النار
     socket.on('shoot', (data) => {
-        let room = rooms[data.roomId];
-        if (room) {
-            let targetSocket = (socket.id === room.hostId) ? room.guestId : room.hostId;
-            if (targetSocket) {
-                io.to(targetSocket).emit('remote_shoot', { tankIndex: data.tankIndex });
-            }
-        }
+        socket.broadcast.to(data.roomId).emit('remote_shoot', data);
     });
 
+    // السيطرة على آبار النفط
+    socket.on('capture_rig', (data) => {
+        socket.broadcast.to(data.roomId).emit('rig_captured', data);
+    });
+
+    // مغادرة الغرفة
     socket.on('leave_room', (data) => {
-        let room = rooms[data.roomId];
-        if (room) {
-            if (socket.id === room.hostId) {
-                delete rooms[data.roomId];
-                io.to(data.roomId).emit('rooms_list', []);
-            } else if (socket.id === room.guestId) {
-                room.guestId = null;
-                io.to(room.hostId).emit('room_update', { guestJoined: false });
-            }
-            socket.leave(data.roomId);
-            io.emit('rooms_list', Object.keys(rooms).map(id => ({ id, name: rooms[id].name, hostFlag: rooms[id].hostFlag })));
+        if (rooms[data.roomId]) {
+            delete rooms[data.roomId];
+            io.emit('rooms_list', getRoomsArray());
         }
+        socket.leave(data.roomId);
     });
 
+    // قطع الاتصال
     socket.on('disconnect', () => {
-        for (let roomId in rooms) {
-            let room = rooms[roomId];
-            if (room.hostId === socket.id || room.guestId === socket.id) {
-                delete rooms[roomId];
-                io.emit('rooms_list', Object.keys(rooms).map(id => ({ id, name: rooms[id].name, hostFlag: rooms[id].hostFlag })));
-                break;
+        for (let rId in rooms) {
+            if (rooms[rId].hostId === socket.id || rooms[rId].guestId === socket.id) {
+                io.to(rId).emit('room_update', { guestJoined: false });
+                delete rooms[rId];
             }
         }
+        io.emit('rooms_list', getRoomsArray());
     });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`السيرفر يعمل بكفاءة على البورت ${PORT}`);
-});
+function getRoomsArray() {
+    return Object.keys(rooms).map(id => ({
+        id: id,
+        name: rooms[id].name,
+        hostFlag: rooms[id].hostFlag,
+        guestJoined: rooms[id].guestId !== null
+    }));
+}
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log(`السيرفر يعمل على المنفذ ${PORT}`));
