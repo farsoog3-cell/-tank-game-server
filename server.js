@@ -12,6 +12,7 @@ let rooms = {};
 
 io.on('connection', (socket) => {
     console.log(`مستخدم متصل: ${socket.id}`);
+    socket.emit('set_my_id', { id: socket.id });
 
     socket.on('get_rooms', () => {
         socket.emit('rooms_list', getRoomsArray());
@@ -72,6 +73,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // نظام نقل إحداثيات وأحداث الحرب والقتال بين الطرفين
     socket.on('tank_move', (data) => {
         socket.broadcast.to(data.roomId).emit('remote_tank_move', data);
     });
@@ -82,6 +84,10 @@ io.on('connection', (socket) => {
 
     socket.on('shoot', (data) => {
         socket.broadcast.to(data.roomId).emit('remote_shoot', data);
+    });
+
+    socket.on('tank_damaged', (data) => {
+        socket.broadcast.to(data.roomId).emit('remote_tank_damaged', data);
     });
 
     socket.on('capture_rig', (data) => {
