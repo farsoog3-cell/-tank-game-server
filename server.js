@@ -19,15 +19,12 @@ let rooms = [];
 io.on('connection', (socket) => {
     console.log(`مستخدم متصل: ${socket.id}`);
     
-    // إرسال الـ ID الخاص باللاعب عند الاتصال
     socket.emit("set_my_id", { id: socket.id });
 
-    // إرسال قائمة الغرف المتاحة
     socket.on("get_rooms", () => {
         socket.emit("rooms_list", rooms);
     });
 
-    // إنشاء غرفة جديدة
     socket.on("create_room", (data) => {
         const roomId = 'room_' + Math.random().toString(36).substr(2, 6);
         const newRoom = {
@@ -57,7 +54,6 @@ io.on('connection', (socket) => {
         io.emit("rooms_list", rooms);
     });
 
-    // انضمام لاعب للغرفة كضيف
     socket.on("join_room", (data) => {
         const room = rooms.find(r => r.id === data.roomId);
         if (room && !room.guestId) {
@@ -78,7 +74,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // تحديث حالة الاستعداد (جاهز / غير جاهز)
     socket.on("set_ready", (data) => {
         const room = rooms.find(r => r.id === data.roomId);
         if (room) {
@@ -92,43 +87,45 @@ io.on('connection', (socket) => {
         }
     });
 
-    // بدء المعركة من قبل المضيف
     socket.on("start_game", (data) => {
         const room = rooms.find(r => r.id === data.roomId);
         if (room && socket.id === room.hostId && room.hostReady && room.guestReady) {
             io.to(room.id).emit("start_game");
-            // إزالة الغرفة من القائمة العامة لكي لا ينضم إليها لاعبون آخرون أثناء المعركة
             rooms = rooms.filter(r => r.id !== data.roomId);
             io.emit("rooms_list", rooms);
         }
     });
 
-    // مزامنة حركة الدبابات
     socket.on("tank_move", (data) => {
-        socket.to(data.roomId).emit("remote_tank_move", data);
+        socket.to(data.roomId).emit("remote_tank_move", {
+            index: data.index,
+            x: -data.x,
+            y: data.y,
+            z: -data.z,
+            rotY: data.rotY
+        });
     });
 
-    // مزامنة نشر دبابة جديدة
     socket.on("spawn_tank", (data) => {
-        socket.to(data.roomId).emit("remote_tank_spawn", data);
+        socket.to(data.roomId).emit("remote_tank_spawn", {
+            x: -data.x,
+            z: -data.z,
+            type: data.type
+        });
     });
 
-    // مزامنة إطلاق النار
     socket.on("shoot", (data) => {
         socket.to(data.roomId).emit("remote_shoot", data);
     });
 
-    // مزامنة الأضرار والإصابات
     socket.on("tank_damaged", (data) => {
         socket.to(data.roomId).emit("remote_tank_damaged", data);
     });
 
-    // مزامنة السيطرة على آبار النفط
     socket.on("capture_rig", (data) => {
         socket.to(data.roomId).emit("rig_captured", data);
     });
 
-    // مغادرة الغرفة أو قطع الاتصال
     socket.on("leave_room", (data) => {
         handleDisconnect(socket);
     });
@@ -144,11 +141,9 @@ function handleDisconnect(socket) {
     if (roomIndex !== -1) {
         let room = rooms[roomIndex];
         if (socket.id === room.hostId) {
-            // إذا غادر المضيف، يتم حذف الغرفة بالكامل
             io.to(room.id).emit("room_update", { guestJoined: false });
             rooms.splice(roomIndex, 1);
         } else {
-            // إذا غادر الضيف، تبقى الغرفة وينتظر المضيف خصماً آخر
             room.guestId = null;
             room.guestJoined = false;
             room.guestReady = false;
