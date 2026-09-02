@@ -14,16 +14,16 @@ const io = new Server(server, {
     }
 });
 
-let rooms = {}; // لتخزين بيانات الغرف واللاعبين
+let rooms = {}; // تخزين الغرف واللاعبين
 
 app.get('/', (req, res) => {
-    res.send('خادم لعبة حرب المعسكرات يعمل بكفاءة!');
+    res.send('خادم حرب المعسكرات المتقدمة يعمل بنجاح!');
 });
 
 io.on('connection', (socket) => {
     console.log(`[اتصال جديد] معرف اللاعب: ${socket.id}`);
 
-    // إرسال قائمة الغرف المتاحة للمستخدم عند الطلب
+    // جلب قائمة الغرف المتاحة
     socket.on('get_rooms', () => {
         let roomsList = Object.keys(rooms).map(name => ({
             name: name,
@@ -41,10 +41,10 @@ io.on('connection', (socket) => {
         };
         socket.join(data.roomName);
         socket.emit('room_created_success', { roomName: data.roomName });
-        console.log(`[إنشاء غرفة] الغرفة: ${data.roomName} بواسطة اللاعب ${socket.id}`);
+        console.log(`[إنشاء غرفة] الغرفة: ${data.roomName} بواسطة اللاعب ${socket.id} (${data.camp})`);
     });
 
-    // انضمام صديق إلى الغرفة
+    // انضمام الصديق إلى الغرفة
     socket.on('join_room', (data) => {
         if (rooms[data.roomName]) {
             socket.join(data.roomName);
@@ -54,13 +54,12 @@ io.on('connection', (socket) => {
                 ready: false,
                 host: false
             });
-            // تحديث اللوبي للاعبين في نفس الغرفة
             io.to(data.roomName).emit('update_lobby', { players: rooms[data.roomName].players });
-            console.log(`[انضمام لغرفة] انضم اللاعب ${socket.id} إلى غرفة ${data.roomName}`);
+            console.log(`[انضمام لغرفة] انضم اللاعب ${socket.id} إلى غرفة ${data.roomName} بمستعمرة ${data.camp}`);
         }
     });
 
-    // حالة الاستعداد للعب (جاهز / غير جاهز)
+    // تحديث حالة الاستعداد (جاهز / غير جاهز)
     socket.on('player_ready', (data) => {
         let room = rooms[data.roomName];
         if (room) {
@@ -81,26 +80,24 @@ io.on('connection', (socket) => {
         }
     });
 
-    // شراء دبابة داخل المعسكر وإرسالها لبقية اللاعبين
+    // شراء دبابة وبثها لجميع اللاعبين في الغرفة ليراها الصديق
     socket.on('buy_tank_action', (data) => {
         io.to(data.roomName).emit('tank_spawned', {
             playerId: socket.id,
             camp: data.camp
         });
-        console.log(`[شراء دبابة] تم شراء دبابة في معسكر ${data.camp} داخل غرفة ${data.roomName}`);
+        console.log(`[شراء دبابة] تم شراء دبابة لصالح المعسكر (${data.camp}) في الغرفة ${data.roomName}`);
     });
 
-    // مغادرة أو انقطاع اتصال اللاعب
+    // مغادرة أو انقطاع الاتصال
     socket.on('disconnect', () => {
         console.log(`[انقطاع اتصال] غادر اللاعب: ${socket.id}`);
         for (let roomName in rooms) {
             rooms[roomName].players = rooms[roomName].players.filter(p => p.id !== socket.id);
-            // إذا فرغت الغرفة، يتم حذفها
             if (rooms[roomName].players.length === 0) {
                 delete rooms[roomName];
                 console.log(`[حذف غرفة] تم حذف الغرفة الفارغة: ${roomName}`);
             } else {
-                // تحديث اللوبي لمن تبقى
                 io.to(roomName).emit('update_lobby', { players: rooms[roomName].players });
             }
         }
