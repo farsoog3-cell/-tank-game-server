@@ -17,12 +17,13 @@ const io = new Server(server, {
 let rooms = {};
 
 app.get('/', (req, res) => {
-    res.send('خادم حرب المعسكرات المتقدمة يعمل بنجاح!');
+    res.send('خادم حرب المعسكرات السورية يعمل بنجاح!');
 });
 
 io.on('connection', (socket) => {
     console.log(`[اتصال جديد] معرف اللاعب: ${socket.id}`);
 
+    // جلب الغرف المتاحة
     socket.on('get_rooms', () => {
         let roomsList = Object.keys(rooms).map(name => ({
             name: name,
@@ -31,6 +32,7 @@ io.on('connection', (socket) => {
         socket.emit('rooms_list', roomsList);
     });
 
+    // إنشاء غرفة جديدة
     socket.on('create_room', (data) => {
         rooms[data.roomName] = {
             name: data.roomName,
@@ -39,8 +41,10 @@ io.on('connection', (socket) => {
         };
         socket.join(data.roomName);
         socket.emit('room_created_success', { roomName: data.roomName });
+        console.log(`[غرفة جديدة] ${data.roomName} بواسطة ${socket.id}`);
     });
 
+    // انضمام صديق لغرفة
     socket.on('join_room', (data) => {
         if (rooms[data.roomName]) {
             socket.join(data.roomName);
@@ -51,9 +55,11 @@ io.on('connection', (socket) => {
                 host: false
             });
             io.to(data.roomName).emit('update_lobby', { players: rooms[data.roomName].players });
+            console.log(`[انضمام] اللاعب ${socket.id} إلى غرفة ${data.roomName}`);
         }
     });
 
+    // تحديث حالة الاستعداد
     socket.on('player_ready', (data) => {
         let room = rooms[data.roomName];
         if (room) {
@@ -65,14 +71,16 @@ io.on('connection', (socket) => {
         }
     });
 
+    // بدء المعركة
     socket.on('start_game', (data) => {
         let room = rooms[data.roomName];
         if (room) {
             io.to(data.roomName).emit('launch_game', { money: room.money });
+            console.log(`[بدء المعركة] في الغرفة: ${data.roomName}`);
         }
     });
 
-    // شراء دبابة وإرسالها لكل اللاعبين في الغرفة (أنت وصديقك)
+    // شراء دبابة وبثها للطرفين
     socket.on('buy_tank_action', (data) => {
         io.to(data.roomName).emit('tank_spawned', {
             tankId: data.tankId,
@@ -82,7 +90,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // استقبال حركة الدبابة من لاعب وإرسالها للصديق الآخر فوراً
+    // تحريك الدبابة ومزامنتها بين الصديقين
     socket.on('tank_move', (data) => {
         socket.to(data.roomName).emit('tank_moved', {
             tankId: data.tankId,
@@ -91,7 +99,9 @@ io.on('connection', (socket) => {
         });
     });
 
+    // مغادرة أو انقطاع الاتصال
     socket.on('disconnect', () => {
+        console.log(`[انقطاع اتصال] ${socket.id}`);
         for (let roomName in rooms) {
             rooms[roomName].players = rooms[roomName].players.filter(p => p.id !== socket.id);
             if (rooms[roomName].players.length === 0) {
