@@ -16,12 +16,10 @@ const rooms = {};
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  // Send the current rooms list to the newly connected client
   socket.emit('rooms-list', rooms);
 
-  // Handle room creation
   socket.on('create-room', (data) => {
-    const roomId = 'room_' + Math.random().toString(36.substring(2, 9));
+    const roomId = 'room_' + Math.random().toString(36).substring(2, 9);
     rooms[roomId] = {
       id: roomId,
       name: data.roomName,
@@ -35,7 +33,6 @@ io.on('connection', (socket) => {
     io.emit('rooms-list', rooms);
   });
 
-  // Handle joining a room
   socket.on('join-room', (data) => {
     const room = rooms[data.roomId];
     if (room) {
@@ -49,7 +46,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnection
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
     for (const roomId in rooms) {
