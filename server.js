@@ -1,50 +1,71 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
-
-let players = {};
+const rooms = {};
 
 io.on('connection', (socket) => {
-    console.log(`لاعب متصل: ${socket.id}`);
+  console.log('A user connected:', socket.id);
 
-    // تحديد دور اللاعب (أول أو ثانٍ)
-    let role = Object.keys(players).length === 0 ? 'player1' : 'player2';
-    players[socket.id] = { id: socket.id, role: role, x: 0, z: 0, hp: 100 };
+  // Send the current rooms list to the newly connected client
+  socket.emit('rooms-list', rooms);
 
-    socket.emit('assign-role', { role, id: socket.id });
+  // Handle room creation
+  socket.on('create-room', (data) => {
+    const roomId = 'room_' + Math.random().toString(36.substring(2, 9));
+    rooms[roomId] = {
+      id: roomId,
+      name: data.roomName,
+      host: data.hostName,
+      flag: data.flag,
+      players: [{ id: socket.id, name: data.hostName, flag: data.flag }]
+    };
 
-    // استقبال تحديث حركة الدبابة وإرسالها للآخرين
-    socket.addListener('tank-move', (data) => {
-        socket.broadcast.emit('tank-move', { id: socket.id, ...data });
-    });
+    socket.join(roomId);
+    socket.emit('room-created', rooms[roomId]);
+    io.emit('rooms-list', rooms);
+  });
 
-    // استقبال إطلاق النار
-    socket.addListener('tank-shoot', (data) => {
-        socket.broadcast.emit('tank-shoot', { id: socket.id, ...data });
-    });
+  // Handle joining a room
+  socket.on('join-room', (data) => {
+    const room = rooms[data.roomId];
+    if (room) {
+      room.players.push({ id: socket.id, name: data.playerName, flag: data.flag });
+      socket.join(data.roomId);
+      socket.emit('room-joined', room);
+      io.emit('rooms-list', rooms);
+      io.to(data.roomId).emit('player-update', room.players);
+    } else {
+      socket.emit('error', 'Room not found');
+    }
+  });
 
-    // شراء دبابة جديدة وتحديث الاقتصاد
-    socket.addListener('buy-tank', (data) => {
-        socket.broadcast.emit('buy-tank', data);
-    });
-
-    socket.on('disconnect', () => {
-        console.log(`لاعب غادر: ${socket.id}`);
-        delete players[socket.id];
-        socket.broadcast.emit('player-disconnected', socket.id);
-    });
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+    for (const roomId in rooms) {
+      const room = rooms[roomId];
+      room.players = room.players.filter(p => p.id !== socket.id);
+      if (room.players.length === 0) {
+        delete rooms[roomId];
+      } else {
+        io.to(roomId).emit('player-update', room.players);
+      }
+    }
+    io.emit('rooms-list', rooms);
+  });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
