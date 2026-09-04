@@ -1,7 +1,7 @@
 {
   "name": "tank-game-server",
   "version": "1.0.0",
-  "description": "Tank game backend server",
+  "description": "Multiplayer Server for Tank Game",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
