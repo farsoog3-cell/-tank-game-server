@@ -3,433 +3,409 @@ const http = require("http");
 const WebSocket = require("ws");
 
 const app = express();
+const server = http.createServer(app);
+
+const PORT = process.env.PORT || 10000;
+const HOST = "0.0.0.0";
 
 app.get("/", (req, res) => {
-    res.send("Tank Game Server Online");
+  res.send("Tank Game Matchmaking Server is running.");
 });
 
 app.get("/health", (req, res) => {
-    res.json({
-        status: "ok",
-        waitingPlayers: waitingPlayers.length,
-        rooms: rooms.size
-    });
+  res.json({
+    ok: true,
+    waitingPlayers: waitingPlayers.length,
+    rooms: rooms.size
+  });
 });
-
-const PORT = process.env.PORT || 10000;
-
-const server = http.createServer(app);
 
 const wss = new WebSocket.Server({
-    server,
-    path: "/ws"
+  server,
+  path: "/ws"
 });
 
-// اللاعبون الذين يبحثون عن مباراة
+// اللاعبون الذين ينتظرون لاعبًا آخر
 const waitingPlayers = [];
 
-// الغرف الموجودة
+// الغرف
 const rooms = new Map();
 
-let nextRoomId = 1;
 let nextPlayerId = 1;
+let nextRoomId = 1;
 
 
-// --------------------------------------------------
+// ===============================
 // أدوات مساعدة
-// --------------------------------------------------
+// ===============================
 
 function send(ws, data) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
-    }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
 }
 
 function removeFromWaiting(ws) {
-    const index = waitingPlayers.indexOf(ws);
+  const index = waitingPlayers.indexOf(ws);
 
-    if (index !== -1) {
-        waitingPlayers.splice(index, 1);
-    }
+  if (index !== -1) {
+    waitingPlayers.splice(index, 1);
+    return true;
+  }
+
+  return false;
 }
 
-function createRoom(player1, player2) {
+function broadcastRoom(room, data) {
+  if (!room) return;
 
-    const roomId = "room_" + nextRoomId++;
-
-    const room = {
-        id: roomId,
-        players: [
-            player1,
-            player2
-        ],
-        createdAt: Date.now()
-    };
-
-    rooms.set(roomId, room);
-
-    player1.roomId = roomId;
-    player2.roomId = roomId;
-
-    player1.team = "player";
-    player2.team = "enemy";
-
-    send(player1.ws, {
-        type: "match_found",
-        roomId,
-        playerId: player1.id,
-        opponentId: player2.id,
-        team: "player",
-        message: "تم العثور على لاعب"
-    });
-
-    send(player2.ws, {
-        type: "match_found",
-        roomId,
-        playerId: player2.id,
-        opponentId: player1.id,
-        team: "enemy",
-        message: "تم العثور على لاعب"
-    });
-
-    console.log(
-        `MATCH FOUND: ${player1.id} VS ${player2.id}`
-    );
+  send(room.player1, data);
+  send(room.player2, data);
 }
 
 
-// --------------------------------------------------
+// ===============================
 // البحث عن لاعب
-// --------------------------------------------------
+// ===============================
 
-function startSearching(player) {
+function searchForPlayer(ws) {
 
-    // لا تسمح للاعب بالبحث مرتين
-    removeFromWaiting(player.ws);
+  // لا تسمح بإضافة نفس اللاعب مرتين
+  removeFromWaiting(ws);
 
-    // إذا يوجد لاعب آخر ينتظر
-    if (waitingPlayers.length > 0) {
+  // ابحث عن لاعب صالح ينتظر
+  let opponent = null;
 
-        const opponentWs = waitingPlayers.shift();
+  while (waitingPlayers.length > 0) {
+    const candidate = waitingPlayers.shift();
 
-        if (
-            opponentWs &&
-            opponentWs.readyState === WebSocket.OPEN &&
-            opponentWs.playerData
-        ) {
-
-            const opponent = opponentWs.playerData;
-
-            createRoom(
-                player,
-                opponent
-            );
-
-            return;
-        }
+    if (
+      candidate &&
+      candidate !== ws &&
+      candidate.readyState === WebSocket.OPEN
+    ) {
+      opponent = candidate;
+      break;
     }
+  }
 
-    // لا يوجد لاعب حاليًا
-    waitingPlayers.push(player.ws);
+  // لا يوجد لاعب آخر
+  if (!opponent) {
 
-    send(player.ws, {
-        type: "searching",
-        message: "جاري البحث عن لاعب..."
+    waitingPlayers.push(ws);
+
+    send(ws, {
+      type: "waiting",
+      message: "جاري البحث عن لاعب..."
     });
 
-    console.log(
-        `Player ${player.id} is searching`
-    );
+    return;
+  }
+
+  // وجدنا لاعبًا
+  const roomId = "room_" + nextRoomId++;
+
+  const room = {
+    id: roomId,
+    player1: opponent,
+    player2: ws,
+    createdAt: Date.now()
+  };
+
+  rooms.set(roomId, room);
+
+  opponent.roomId = roomId;
+  ws.roomId = roomId;
+
+  opponent.team = "red";
+  ws.team = "blue";
+
+  // إرسال نتيجة المطابقة للاعب الأول
+  send(opponent, {
+    type: "match_found",
+    roomId: roomId,
+    playerId: opponent.playerId,
+    opponentId: ws.playerId,
+    team: "red"
+  });
+
+  // إرسال نتيجة المطابقة للاعب الثاني
+  send(ws, {
+    type: "match_found",
+    roomId: roomId,
+    playerId: ws.playerId,
+    opponentId: opponent.playerId,
+    team: "blue"
+  });
+
+  console.log(
+    `MATCH FOUND: ${opponent.playerId} vs ${ws.playerId} -> ${roomId}`
+  );
 }
 
 
-// --------------------------------------------------
-// إلغاء البحث
-// --------------------------------------------------
-
-function cancelSearching(player) {
-
-    removeFromWaiting(player.ws);
-
-    send(player.ws, {
-        type: "search_cancelled",
-        message: "تم إلغاء البحث"
-    });
-}
-
-
-// --------------------------------------------------
-// رسائل WebSocket
-// --------------------------------------------------
+// ===============================
+// WebSocket
+// ===============================
 
 wss.on("connection", (ws) => {
 
-    const player = {
-        id: "player_" + nextPlayerId++,
-        ws,
-        roomId: null,
-        team: null
-    };
+  ws.playerId = "player_" + nextPlayerId++;
+  ws.roomId = null;
+  ws.team = null;
+  ws.isAlive = true;
 
-    ws.playerData = player;
+  console.log("Player connected:", ws.playerId);
 
+  send(ws, {
+    type: "connected",
+    playerId: ws.playerId
+  });
+
+
+  // =============================
+  // استقبال الرسائل
+  // =============================
+
+  ws.on("message", (raw) => {
+
+    let data;
+
+    try {
+      data = JSON.parse(raw.toString());
+    } catch (error) {
+      console.log("Invalid JSON from", ws.playerId);
+      return;
+    }
+
+    if (!data || !data.type) {
+      return;
+    }
+
+
+    // -----------------------------
+    // البحث عن لاعب
+    // يدعم نسخة اللعبة الحالية
+    // -----------------------------
+
+    if (
+      data.type === "find_match" ||
+      data.type === "search_player"
+    ) {
+
+      searchForPlayer(ws);
+      return;
+    }
+
+
+    // -----------------------------
+    // إلغاء البحث
+    // -----------------------------
+
+    if (
+      data.type === "cancel_match" ||
+      data.type === "cancel_search"
+    ) {
+
+      const removed = removeFromWaiting(ws);
+
+      if (removed) {
+        send(ws, {
+          type: "search_cancelled",
+          message: "تم إلغاء البحث"
+        });
+      }
+
+      return;
+    }
+
+
+    // -----------------------------
+    // اختيار الدولة
+    // -----------------------------
+
+    if (data.type === "choose_country") {
+
+      const room = rooms.get(ws.roomId);
+
+      if (!room) return;
+
+      ws.country = data.country || null;
+
+      send(ws, {
+        type: "country_selected",
+        country: ws.country
+      });
+
+      if (room.player1.country && room.player2.country) {
+
+        broadcastRoom(room, {
+          type: "game_start",
+          roomId: room.id,
+
+          player1: {
+            id: room.player1.playerId,
+            country: room.player1.country,
+            team: room.player1.team
+          },
+
+          player2: {
+            id: room.player2.playerId,
+            country: room.player2.country,
+            team: room.player2.team
+          }
+        });
+
+        console.log("GAME START:", room.id);
+      }
+
+      return;
+    }
+
+
+    // -----------------------------
+    // تحديثات اللعبة
+    // -----------------------------
+
+    if (data.type === "game_update") {
+
+      const room = rooms.get(ws.roomId);
+
+      if (!room) return;
+
+      const opponent =
+        room.player1 === ws
+          ? room.player2
+          : room.player1;
+
+      if (opponent.readyState === WebSocket.OPEN) {
+
+        send(opponent, {
+          type: "game_update",
+          from: ws.playerId,
+          data: data.data
+        });
+      }
+
+      return;
+    }
+
+
+    // -----------------------------
+    // Ping من العميل
+    // -----------------------------
+
+    if (data.type === "ping") {
+
+      send(ws, {
+        type: "pong"
+      });
+
+      return;
+    }
+  });
+
+
+  // =============================
+  // إغلاق الاتصال
+  // =============================
+
+  ws.on("close", () => {
+
+    console.log("Player disconnected:", ws.playerId);
+
+    // إذا كان ينتظر لاعبًا
+    removeFromWaiting(ws);
+
+    // إذا كان داخل غرفة
+    if (ws.roomId) {
+
+      const room = rooms.get(ws.roomId);
+
+      if (room) {
+
+        const opponent =
+          room.player1 === ws
+            ? room.player2
+            : room.player1;
+
+        send(opponent, {
+          type: "opponent_left",
+          message: "غادر اللاعب الآخر المباراة"
+        });
+
+        rooms.delete(ws.roomId);
+      }
+    }
+  });
+
+
+  ws.on("error", (error) => {
     console.log(
-        `Player connected: ${player.id}`
+      "WebSocket error:",
+      ws.playerId,
+      error.message
     );
+  });
+});
 
-    send(ws, {
-        type: "connected",
-        playerId: player.id
-    });
 
+// ===============================
+// Heartbeat
+// يمنع Render من اعتبار الاتصال
+// ميتًا
+// ===============================
 
-    ws.on("message", (raw) => {
+const heartbeatInterval = setInterval(() => {
 
-        let data;
+  wss.clients.forEach((ws) => {
 
-        try {
-            data = JSON.parse(raw.toString());
-        } catch (error) {
-            send(ws, {
-                type: "error",
-                message: "رسالة غير صحيحة"
-            });
+    if (ws.isAlive === false) {
 
-            return;
-        }
+      console.log("Terminating dead connection:", ws.playerId);
 
-        const player = ws.playerData;
+      removeFromWaiting(ws);
+      ws.terminate();
 
-        // ------------------------------------------
-        // بدء البحث
-        // ------------------------------------------
+      return;
+    }
 
-        if (data.type === "search_player") {
+    ws.isAlive = false;
 
-            startSearching(player);
+    try {
+      ws.ping();
+    } catch (error) {}
+  });
 
-            return;
-        }
+}, 30000);
 
 
-        // ------------------------------------------
-        // إلغاء البحث
-        // ------------------------------------------
+wss.on("close", () => {
+  clearInterval(heartbeatInterval);
+});
 
-        if (data.type === "cancel_search") {
 
-            cancelSearching(player);
+// استقبال Pong
+wss.on("connection", (ws) => {
 
-            return;
-        }
-
-
-        // ------------------------------------------
-        // اختيار الدولة
-        // ------------------------------------------
-
-        if (data.type === "choose_country") {
-
-            if (!player.roomId) {
-                return;
-            }
-
-            const room = rooms.get(player.roomId);
-
-            if (!room) {
-                return;
-            }
-
-            const country = data.country;
-
-            if (!country) {
-                return;
-            }
-
-            player.country = country;
-
-            send(player.ws, {
-                type: "country_selected",
-                country
-            });
-
-            const opponent = room.players.find(
-                p => p.id !== player.id
-            );
-
-            if (opponent) {
-
-                send(opponent.ws, {
-                    type: "opponent_country_selected",
-                    country
-                });
-
-            }
-
-            // إذا اختار اللاعبان الدولة تبدأ المباراة
-            if (
-                room.players.length === 2 &&
-                room.players.every(p => p.country)
-            ) {
-
-                send(room.players[0].ws, {
-                    type: "game_start",
-                    roomId: room.id,
-                    players: room.players.map(p => ({
-                        id: p.id,
-                        country: p.country,
-                        team: p.team
-                    }))
-                });
-
-                send(room.players[1].ws, {
-                    type: "game_start",
-                    roomId: room.id,
-                    players: room.players.map(p => ({
-                        id: p.id,
-                        country: p.country,
-                        team: p.team
-                    }))
-                });
-
-                console.log(
-                    `GAME STARTED: ${room.id}`
-                );
-            }
-
-            return;
-        }
-
-
-        // ------------------------------------------
-        // بيانات اللعبة
-        // ------------------------------------------
-
-        if (data.type === "game_update") {
-
-            if (!player.roomId) {
-                return;
-            }
-
-            const room = rooms.get(player.roomId);
-
-            if (!room) {
-                return;
-            }
-
-            const opponent = room.players.find(
-                p => p.id !== player.id
-            );
-
-            if (opponent) {
-
-                send(opponent.ws, {
-                    type: "game_update",
-                    from: player.id,
-                    data: data.data
-                });
-
-            }
-
-            return;
-        }
-
-
-        // ------------------------------------------
-        // رسالة Ping
-        // ------------------------------------------
-
-        if (data.type === "ping") {
-
-            send(ws, {
-                type: "pong"
-            });
-
-            return;
-        }
-    });
-
-
-    // --------------------------------------------------
-    // انقطاع اللاعب
-    // --------------------------------------------------
-
-    ws.on("close", () => {
-
-        const player = ws.playerData;
-
-        removeFromWaiting(ws);
-
-        if (player && player.roomId) {
-
-            const room = rooms.get(player.roomId);
-
-            if (room) {
-
-                const opponent = room.players.find(
-                    p => p.id !== player.id
-                );
-
-                if (opponent) {
-
-                    send(opponent.ws, {
-                        type: "opponent_left",
-                        message: "غادر اللاعب الآخر المباراة"
-                    });
-
-                }
-
-                rooms.delete(player.roomId);
-            }
-        }
-
-        console.log(
-            `Player disconnected: ${player.id}`
-        );
-    });
-
-
-    ws.on("error", (error) => {
-
-        console.error(
-            `WebSocket error for ${player.id}:`,
-            error.message
-        );
-
-    });
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
 
 });
 
 
-// --------------------------------------------------
-// تنظيف الاتصالات القديمة
-// --------------------------------------------------
-
-setInterval(() => {
-
-    wss.clients.forEach(ws => {
-
-        if (ws.readyState === WebSocket.OPEN) {
-
-            send(ws, {
-                type: "server_ping"
-            });
-
-        }
-
-    });
-
-}, 25000);
-
-
-// --------------------------------------------------
+// ===============================
 // تشغيل السيرفر
-// --------------------------------------------------
+// ===============================
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, HOST, () => {
 
-    console.log(
-        `Tank Game Server running on port ${PORT}`
-    );
-
+  console.log("--------------------------------");
+  console.log("Tank Game Server Started");
+  console.log("--------------------------------");
+  console.log("Port:", PORT);
+  console.log("WebSocket:");
+  console.log(`/ws`);
+  console.log("--------------------------------");
 });
