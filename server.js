@@ -8,6 +8,7 @@ const PORT = Number(process.env.PORT || 10000);
 const MAX_PLAYERS_PER_ROOM = 2;
 const ROOM_TTL_MS = 30 * 60 * 1000;
 const STATE_RATE_MS = 50; // 20 state updates/sec
+const RECONNECT_GRACE_MS = 60 * 1000;
 
 const app = express();
 app.use(cors({ origin: true, methods: ["GET", "POST"] }));
@@ -81,7 +82,8 @@ function createRoom(settings = {}) {
       units: {},
       projectiles: {},
       effects: {},
-      winner: null
+      winner: null,
+      snapshots: {}
     },
     lastBroadcast: 0
   };
@@ -109,26 +111,23 @@ function emitError(socket, code, message) {
 function removePlayerFromRoom(socket, reason = "left") {
   const room = roomOfSocket(socket);
   if (!room) return;
-
-  const player = room.players.find(p => p.id === socket.id);
-  if (player) player.connected = false;
-
+  const player = room.players.find(p => p.socketId === socket.id);
+  if (!player) return;
   socketToRoom.delete(socket.id);
   socket.leave(room.id);
-
-  if (room.status === "playing") {
-    // The remaining player is informed; the match can be resumed if the
-    // disconnected client reconnects with the same reconnect token.
-    io.to(room.id).emit("player:disconnected", {
-      playerId: socket.id,
-      reason
-    });
-  } else {
-    room.players = room.players.filter(p => p.id !== socket.id);
-    emitRoom(room);
-  }
-
+  player.connected = false; player.socketId = null; player.disconnectedAt = Date.now();
   room.lastActivity = Date.now();
+  if (room.status === "playing") {
+    io.to(room.id).emit("player:disconnected", { playerId: player.id, reason, graceMs: RECONNECT_GRACE_MS });
+    if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
+    player.disconnectTimer = setTimeout(() => {
+      if (player.connected || !player.disconnectedAt || Date.now()-player.disconnectedAt < RECONNECT_GRACE_MS || room.status !== "playing") return;
+      const other=room.players.find(p=>p.id!==player.id && p.connected);
+      room.state.winner=other?other.id:null; room.status="finished"; room.lastActivity=Date.now();
+      io.to(room.id).emit("match:forfeit", { disconnectedPlayerId:player.id, winnerPlayerId:other?other.id:null, reason:"disconnect_timeout", graceMs:RECONNECT_GRACE_MS, state:room.state });
+      emitRoom(room);
+    }, RECONNECT_GRACE_MS+100);
+  } else { room.players=room.players.filter(p=>p.id!==player.id); emitRoom(room); }
 }
 
 function findJoinableRoom() {
@@ -152,13 +151,16 @@ function addPlayer(socket, room, data = {}) {
   if (usedColors.has(color)) color = usedColors.has("#ef4444") ? "#22c55e" : "#ef4444";
 
   const player = {
-    id: socket.id,
+    id: id("player_"),
+    socketId: socket.id,
     name: cleanName(data.name),
     color,
     ready: false,
     connected: true,
     reconnectToken: id("rt_"),
-    lastCommandAt: 0
+    lastCommandAt: 0,
+    disconnectedAt: null,
+    disconnectTimer: null
   };
 
   room.players.push(player);
@@ -183,6 +185,7 @@ function startRoom(room) {
   room.status = "playing";
   room.state.startedAt = Date.now();
   room.state.tick = 0;
+  room.state.snapshots = {};
   room.lastActivity = Date.now();
 
   // The server owns the match state container. The client is responsible
@@ -229,6 +232,22 @@ io.on("connection", socket => {
     serverTime: Date.now()
   });
 
+  socket.on("room:reconnect", data => {
+    if (roomOfSocket(socket)) return emitError(socket,"ALREADY_IN_ROOM","أنت داخل غرفة بالفعل.");
+    const token=String(data?.reconnectToken||""); let room=null, player=null;
+    for (const r of rooms.values()){ const p=r.players.find(x=>x.reconnectToken===token); if(p){room=r;player=p;break;} }
+    if(!room||!player) return emitError(socket,"RECONNECT_NOT_FOUND","انتهت مهلة العودة إلى المباراة.");
+    if(player.connected) return emitError(socket,"RECONNECT_ACTIVE","اللاعب ما زال متصلاً.");
+    if(!player.disconnectedAt || Date.now()-player.disconnectedAt>RECONNECT_GRACE_MS) return emitError(socket,"RECONNECT_EXPIRED","انتهت مهلة العودة.");
+    if(player.disconnectTimer) clearTimeout(player.disconnectTimer);
+    player.disconnectTimer=null; player.connected=true; player.socketId=socket.id; player.disconnectedAt=null;
+    socketToRoom.set(socket.id,room.id); socket.join(room.id); room.lastActivity=Date.now();
+    socket.emit("room:reconnected",{room:publicRoom(room),playerId:player.id,reconnectToken:player.reconnectToken,state:room.state});
+    const opponent=room.players.find(p=>p.id!==player.id);
+    socket.emit("match:resume",{room:publicRoom(room),playerId:player.id,opponentSnapshot:opponent?room.state.snapshots?.[opponent.id]||null:null});
+    socket.to(room.id).emit("player:reconnected",{playerId:player.id}); emitRoom(room);
+  });
+
   socket.on("room:create", data => {
     if (roomOfSocket(socket)) {
       emitError(socket, "ALREADY_IN_ROOM", "أنت داخل غرفة بالفعل.");
@@ -271,7 +290,7 @@ io.on("connection", socket => {
     const room = roomOfSocket(socket);
     if (!room || room.status !== "waiting") return;
 
-    const player = room.players.find(p => p.id === socket.id);
+    const player = room.players.find(p => p.socketId === socket.id);
     if (!player) return;
 
     player.ready = Boolean(value);
@@ -299,7 +318,7 @@ io.on("connection", socket => {
     const room = roomOfSocket(socket);
     if (!room || room.status !== "playing") return;
 
-    const player = room.players.find(p => p.id === socket.id);
+    const player = room.players.find(p => p.socketId === socket.id);
     if (!player || !player.connected || !rateLimit(player)) return;
     if (!validateCommand(command)) {
       emitError(socket, "INVALID_COMMAND", "أمر لعب غير صالح.");
@@ -326,7 +345,7 @@ io.on("connection", socket => {
     const room = roomOfSocket(socket);
     if (!room || room.status !== "playing") return;
 
-    const player = room.players.find(p => p.id === socket.id);
+    const player = room.players.find(p => p.socketId === socket.id);
     if (!player || !player.connected || !rateLimit(player)) return;
 
     // Only accept JSON-like bounded state snapshots from the active client.
@@ -339,26 +358,17 @@ io.on("connection", socket => {
       return;
     }
 
-    room.state = {
-      ...room.state,
-      ...snapshot,
-      tick: Number(snapshot.tick) || room.state.tick + 1
-    };
+    room.state.tick = Number(snapshot.tick) || room.state.tick + 1;
+    room.state.snapshots[player.id] = {playerId:player.id,snapshot};
     room.lastActivity = Date.now();
-
-    // Send the latest player snapshot to the opponent in real time.
-    socket.to(room.id).emit("match:state", {
-      playerId: player.id,
-      snapshot: room.state,
-      serverTime: Date.now()
-    });
+    socket.to(room.id).emit("match:state", {playerId:player.id,snapshot,serverTime:Date.now()});
   });
 
   socket.on("match:end", data => {
     const room = roomOfSocket(socket);
     if (!room || room.status !== "playing") return;
 
-    const player = room.players.find(p => p.id === socket.id);
+    const player = room.players.find(p => p.socketId === socket.id);
     if (!player) return;
 
     const winner = data?.winner === "player" || data?.winner === "enemy"
