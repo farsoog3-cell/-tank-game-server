@@ -1,17 +1,10 @@
 {
   "name": "tank-game-server",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Real-time multiplayer server for the tank strategy game",
+  "description": "Persistent real-time multiplayer server for the tank strategy game",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "express": "^4.21.2",
-    "ws": "^8.18.0"
-  }
+  "scripts": {"start":"node server.js"},
+  "engines": {"node": ">=18"},
+  "dependencies": {"express":"^4.21.2","pg":"^8.16.3","ws":"^8.18.0"}
 }
