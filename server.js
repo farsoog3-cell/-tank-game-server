@@ -12,20 +12,17 @@ const PORT = Number(process.env.PORT || 10000);
 const rooms = new Map();
 const sockets = new Map();
 
-if (!process.env.DATABASE_URL) {
-  console.error("DATABASE_URL is missing. The server requires PostgreSQL. Use the included render.yaml Blueprint, or add DATABASE_URL in Render Environment using the PostgreSQL Internal Database URL.");
-  process.exit(1);
-}
-
-const pool = new Pool({
+const DATABASE_ENABLED = Boolean(process.env.DATABASE_URL);
+const pool = DATABASE_ENABLED ? new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000
-});
+}) : null;
 
 async function db(query, params = []) {
+  if (!pool) throw new Error("DATABASE_URL_MISSING");
   return pool.query(query, params);
 }
 
@@ -133,8 +130,15 @@ async function joinRoom(room, player, password) {
 function roomSnapshot(room) { return {room:publicRoom(room),state:room.state}; }
 
 app.get("/",(req,res)=>res.json({ok:true,service:"Tank Game Online Server",database:"postgresql",websocket:"/ws",rooms:rooms.size,time:Date.now()}));
-app.get("/health",async(req,res)=>{ try { await db("SELECT 1"); res.json({ok:true,database:true,rooms:rooms.size,players:[...sockets.values()].filter(p=>p.ws?.readyState===WebSocket.OPEN).length,uptime:process.uptime(),time:Date.now()}); } catch(e){res.status(503).json({ok:false,database:false,error:e.message});} });
-app.get("/api/rooms",async(req,res)=>{ try { const q=await db(`SELECT id,name,max_players,host_id,started,created_at FROM rooms ORDER BY created_at DESC LIMIT 100`); res.json(q.rows.map(r=>({id:r.id,name:r.name,maxPlayers:r.max_players,hostId:r.host_id,started:r.started,createdAt:new Date(r.created_at).getTime(),players:[]}))); } catch(e){res.status(500).json({error:"DATABASE_ERROR"});} });
+app.get("/health",async(req,res)=>{
+  if (!DATABASE_ENABLED) return res.json({ok:true,database:false,mode:"temporary",rooms:rooms.size,players:[...sockets.values()].filter(p=>p.ws?.readyState===WebSocket.OPEN).length,uptime:process.uptime(),time:Date.now()});
+  try { await db("SELECT 1"); res.json({ok:true,database:true,mode:"persistent",rooms:rooms.size,players:[...sockets.values()].filter(p=>p.ws?.readyState===WebSocket.OPEN).length,uptime:process.uptime(),time:Date.now()}); }
+  catch(e){res.status(503).json({ok:false,database:false,mode:"database_error",error:e.message});}
+});
+app.get("/api/rooms",async(req,res)=>{
+  if (!DATABASE_ENABLED) return res.json([...rooms.values()].map(r=>({id:r.id,name:r.name,maxPlayers:r.maxPlayers,hostId:r.hostId,started:!!r.state.started,createdAt:r.createdAt,players:[...r.players.values()].map(publicPlayer)})));
+  try { const q=await db(`SELECT id,name,max_players,host_id,started,created_at FROM rooms ORDER BY created_at DESC LIMIT 100`); res.json(q.rows.map(r=>({id:r.id,name:r.name,maxPlayers:r.max_players,hostId:r.host_id,started:r.started,createdAt:new Date(r.created_at).getTime(),players:[]}))); } catch(e){res.status(500).json({error:"DATABASE_ERROR"});}
+});
 
 wss.on("connection",ws=>{
   const player={id:id("p_"),ws,name:"Player",color:"#2f7d32",roomId:null,ready:false};
@@ -195,4 +199,17 @@ wss.on("connection",ws=>{
 
 const heartbeat=setInterval(()=>{for(const ws of wss.clients){if(ws.isAlive===false){ws.terminate();continue;}ws.isAlive=false;ws.ping();}},30000);wss.on("close",()=>clearInterval(heartbeat));
 
-initDatabase().then(()=>server.listen(PORT,"0.0.0.0",()=>console.log(`Tank Game Server listening on ${PORT}`))).catch(err=>{console.error("Database initialization failed",err);process.exit(1);});
+async function start() {
+  if (DATABASE_ENABLED) {
+    let ready = false;
+    for (let attempt = 1; attempt <= 8 && !ready; attempt++) {
+      try { await initDatabase(); ready = true; }
+      catch (err) { console.error(`Database attempt ${attempt}/8 failed:`, err.message); if (attempt < 8) await new Promise(r => setTimeout(r, Math.min(1500 * attempt, 8000))); }
+    }
+    if (!ready) console.error("PostgreSQL is unavailable; server will stay online in temporary mode until DATABASE_URL becomes available on restart.");
+  } else {
+    console.warn("DATABASE_URL is missing. Server is running in temporary memory mode. Add DATABASE_URL on Render to enable persistence.");
+  }
+  server.listen(PORT,"0.0.0.0",()=>console.log(`Tank Game Server listening on ${PORT}`));
+}
+start().catch(err=>{ console.error("Fatal startup error:",err); server.listen(PORT,"0.0.0.0",()=>console.log(`Tank Game Server listening on ${PORT} (degraded mode)`)); });
