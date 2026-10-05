@@ -1,7 +1,8 @@
 services:
   - type: web
     name: tank-game-server
-    runtime: node
+    env: node
     plan: free
     buildCommand: npm install
     startCommand: npm start
+    autoDeploy: true

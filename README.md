@@ -1,23 +1,42 @@
-# Tank Game — GameRanger-style Server
+# Tank Game PvP Server
 
-This server intentionally has **no Firebase, no PostgreSQL and no DATABASE_URL requirement**.
-
-It keeps live rooms, players and match state in server memory and synchronizes them through WebSocket.
+This server provides:
+- 2-player rooms
+- 6-character room codes
+- host / guest roles
+- ready state
+- synchronized battle start
+- WebSocket state relay
+- `/` and `/health` health endpoints
 
 ## Render
 
-1. Put these files in a GitHub repository.
-2. Create a Render Web Service from that repository.
-3. Build command: `npm install`
-4. Start command: `npm start`
-5. No database and no environment variable are required.
-6. The WebSocket endpoint is `/ws`.
+Deploy this folder as a Node Web Service.
 
-Expected URLs after deployment:
-- `https://YOUR-SERVICE.onrender.com/`
-- `https://YOUR-SERVICE.onrender.com/health`
-- `wss://YOUR-SERVICE.onrender.com/ws`
+Build command:
+npm install
 
-## Important
+Start command:
+npm start
 
-This is live server memory. Rooms disappear when the Render service restarts or sleeps. That is intentional for the GameRanger-style live lobby. Permanent accounts/friends/statistics would require a persistent database later.
+The game client connects to:
+
+wss://YOUR-RENDER-DOMAIN/ws
+
+For the current client file, the configured endpoint is:
+wss://tank-game-server-o650.onrender.com/ws
+
+Important: the existing Render URL may currently be running a different server implementation. The new `server.js` must be deployed to that Render service for `/ws` to work.
+
+## Protocol
+
+Client -> server:
+- create_room
+- join_room
+- settings
+- ready
+- start_battle
+- state
+- leave_room
+
+The current implementation is a relay server, not an authoritative anti-cheat server. That is intentional so it can be integrated with the existing browser game without rewriting all combat simulation.
