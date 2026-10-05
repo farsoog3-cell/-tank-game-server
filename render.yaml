@@ -2,8 +2,18 @@ services:
   - type: web
     name: tank-game-server
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tank-game-db
+          property: connectionString
+
+databases:
+  - name: tank-game-db
+    plan: free
+    databaseName: tank_game

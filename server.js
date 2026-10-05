@@ -13,7 +13,7 @@ const rooms = new Map();
 const sockets = new Map();
 
 if (!process.env.DATABASE_URL) {
-  console.error("DATABASE_URL is missing. Create a Render PostgreSQL database and add its Internal Database URL to this service.");
+  console.error("DATABASE_URL is missing. The server requires PostgreSQL. Use the included render.yaml Blueprint, or add DATABASE_URL in Render Environment using the PostgreSQL Internal Database URL.");
   process.exit(1);
 }
 

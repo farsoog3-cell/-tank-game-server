@@ -1,25 +1,67 @@
-# Tank Game Online Server — PostgreSQL Edition
+# Tank Game Server + PostgreSQL
 
-هذه النسخة تستخدم PostgreSQL لحفظ بيانات اللاعبين والغرف وحالة المعركة، وWebSocket للمزامنة اللحظية.
+هذه النسخة تربط سيرفر اللعبة تلقائياً بقاعدة Render PostgreSQL عبر `DATABASE_URL`.
 
-## Render
-1. أنشئ PostgreSQL Database في Render.
-2. أنشئ Web Service من GitHub.
-3. Build Command: `npm install`
-4. Start Command: `npm start`
-5. أضف متغير البيئة `DATABASE_URL` وضع فيه **Internal Database URL** لقاعدة Render PostgreSQL.
-6. بعد النشر سيكون:
-   - HTTP: `https://tank-game-server-o650.onrender.com`
-   - WebSocket: `wss://tank-game-server-o650.onrender.com/ws`
+## الحل لمشكلة DATABASE_URL is missing
 
-السيرفر ينشئ الجداول تلقائياً عند أول تشغيل: players, rooms, room_players.
+الخطأ الذي ظهر في Render يعني أن خدمة الويب لم تحصل على متغير `DATABASE_URL`.
 
-## ما يتم حفظه
-- أسماء وألوان اللاعبين.
-- الغرف وكلمات المرور بصيغة hash وليست نصاً مكشوفاً.
-- أعضاء الغرف والجاهزية.
-- المضيف وحالة بدء المباراة.
-- حالة الوحدات والمباني والمقذوفات والتأثيرات.
-- آخر أحداث المعركة.
+ملف `render.yaml` الموجود هنا يعرّف قاعدة باسم `tank-game-db` ويربطها تلقائياً بالسيرفر:
 
-ملاحظة: كلمة المرور لا تُحفظ كنص صريح. البيانات تبقى في PostgreSQL حتى بعد إعادة تشغيل السيرفر.
+```yaml
+envVars:
+  - key: DATABASE_URL
+    fromDatabase:
+      name: tank-game-db
+      property: connectionString
+```
+
+عند استخدام Render Blueprint على المستودع الذي يحتوي هذا الملف، يقوم Render بربط السيرفر بقاعدة PostgreSQL تلقائياً.
+
+## إذا كانت خدمة tank-game-server موجودة مسبقاً
+
+لا تنشئ خدمة ثانية بنفس الاسم. استخدم Blueprint/Sync على نفس المشروع والمستودع، أو أضف قاعدة PostgreSQL من Render Dashboard ثم في خدمة السيرفر:
+
+Environment → Environment Variables → Add Environment Variable
+
+Name:
+`DATABASE_URL`
+
+Value:
+Internal Database URL لقاعدة PostgreSQL.
+
+ثم اختر Save and Deploy.
+
+## ماذا يحفظ السيرفر؟
+
+- اللاعبين
+- أسماء وألوان اللاعبين
+- الغرف
+- كلمة مرور الغرفة كـ SHA-256 hash
+- صاحب الغرفة
+- أعضاء الغرفة وحالة الجاهزية
+- حالة المعركة
+- الوحدات
+- المباني
+- المقذوفات
+- التأثيرات
+- آخر حدث قتالي
+
+الجداول تنشأ تلقائياً عند أول تشغيل.
+
+## عناوين السيرفر
+
+HTTP:
+`https://tank-game-server-o650.onrender.com`
+
+WebSocket:
+`wss://tank-game-server-o650.onrender.com/ws`
+
+Health:
+`https://tank-game-server-o650.onrender.com/health`
+
+إذا كانت قاعدة البيانات متصلة، يجب أن يرجع Health قيمة:
+
+```json
+{"ok":true,"database":true}
+```
