@@ -1,67 +1,23 @@
-# Tank Game Server + PostgreSQL
+# Tank Game — GameRanger-style Server
 
-هذه النسخة تربط سيرفر اللعبة تلقائياً بقاعدة Render PostgreSQL عبر `DATABASE_URL`.
+This server intentionally has **no Firebase, no PostgreSQL and no DATABASE_URL requirement**.
 
-## الحل لمشكلة DATABASE_URL is missing
+It keeps live rooms, players and match state in server memory and synchronizes them through WebSocket.
 
-الخطأ الذي ظهر في Render يعني أن خدمة الويب لم تحصل على متغير `DATABASE_URL`.
+## Render
 
-ملف `render.yaml` الموجود هنا يعرّف قاعدة باسم `tank-game-db` ويربطها تلقائياً بالسيرفر:
+1. Put these files in a GitHub repository.
+2. Create a Render Web Service from that repository.
+3. Build command: `npm install`
+4. Start command: `npm start`
+5. No database and no environment variable are required.
+6. The WebSocket endpoint is `/ws`.
 
-```yaml
-envVars:
-  - key: DATABASE_URL
-    fromDatabase:
-      name: tank-game-db
-      property: connectionString
-```
+Expected URLs after deployment:
+- `https://YOUR-SERVICE.onrender.com/`
+- `https://YOUR-SERVICE.onrender.com/health`
+- `wss://YOUR-SERVICE.onrender.com/ws`
 
-عند استخدام Render Blueprint على المستودع الذي يحتوي هذا الملف، يقوم Render بربط السيرفر بقاعدة PostgreSQL تلقائياً.
+## Important
 
-## إذا كانت خدمة tank-game-server موجودة مسبقاً
-
-لا تنشئ خدمة ثانية بنفس الاسم. استخدم Blueprint/Sync على نفس المشروع والمستودع، أو أضف قاعدة PostgreSQL من Render Dashboard ثم في خدمة السيرفر:
-
-Environment → Environment Variables → Add Environment Variable
-
-Name:
-`DATABASE_URL`
-
-Value:
-Internal Database URL لقاعدة PostgreSQL.
-
-ثم اختر Save and Deploy.
-
-## ماذا يحفظ السيرفر؟
-
-- اللاعبين
-- أسماء وألوان اللاعبين
-- الغرف
-- كلمة مرور الغرفة كـ SHA-256 hash
-- صاحب الغرفة
-- أعضاء الغرفة وحالة الجاهزية
-- حالة المعركة
-- الوحدات
-- المباني
-- المقذوفات
-- التأثيرات
-- آخر حدث قتالي
-
-الجداول تنشأ تلقائياً عند أول تشغيل.
-
-## عناوين السيرفر
-
-HTTP:
-`https://tank-game-server-o650.onrender.com`
-
-WebSocket:
-`wss://tank-game-server-o650.onrender.com/ws`
-
-Health:
-`https://tank-game-server-o650.onrender.com/health`
-
-إذا كانت قاعدة البيانات متصلة، يجب أن يرجع Health قيمة:
-
-```json
-{"ok":true,"database":true}
-```
+This is live server memory. Rooms disappear when the Render service restarts or sleeps. That is intentional for the GameRanger-style live lobby. Permanent accounts/friends/statistics would require a persistent database later.
