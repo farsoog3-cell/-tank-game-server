@@ -1,10 +1,8 @@
 services:
   - type: web
-    name: tank-game-pvp-server
+    name: tank-game-server
     runtime: node
     plan: free
     buildCommand: npm install
     startCommand: npm start
-    envVars:
-      - key: NODE_VERSION
-        value: "20"
+    healthCheckPath: /health
