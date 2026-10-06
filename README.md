@@ -1,37 +1,55 @@
-# Tank Game Multiplayer Server
+# Tank Game PvP Server
 
-هذا السيرفر متوافق مع WebSocket الموجود في لعبة Tank Game.
+هذا السيرفر مخصص لكود لعبة `index(4)_multiplayer_fixed.html`.
 
 ## تشغيل محلي
+
+```bash
 npm install
 npm start
+```
 
-ثم:
-http://localhost:10000/
-ws://localhost:10000/ws
+سيفتح:
+- HTTP: `http://localhost:10000`
+- WebSocket: `ws://localhost:10000/ws`
+- فحص السيرفر: `http://localhost:10000/health`
 
-## Render
-ارفع هذا المجلد إلى GitHub ثم أنشئ Web Service في Render.
-Build Command: npm install
-Start Command: npm start
+## رفعه على Render
 
-بعد النشر سيكون:
-https://YOUR-SERVICE.onrender.com/
-wss://YOUR-SERVICE.onrender.com/ws
+1. ارفع هذا المجلد إلى GitHub.
+2. أنشئ Web Service في Render.
+3. Build Command:
+   `npm install`
+4. Start Command:
+   `npm start`
+5. بعد التشغيل سيكون WebSocket عادة:
+   `wss://YOUR-SERVICE.onrender.com/ws`
 
-ضع رابط `/ws` في اللعبة بدل الرابط القديم إذا تغيّر اسم الخدمة.
+## مهم جداً
 
-## البروتوكول المدعوم
-- hello
-- presence / presence_list
-- get_rooms / rooms_list
-- create_room
-- join_room
-- settings
-- ready
-- start_battle / battle_start
-- leave_room / peer_left
-- invite / accept_invite / reject_invite
-- state
+ملف اللعبة الحالي يشير إلى:
+`wss://tank-game-server-o650.onrender.com/ws`
 
-السيرفر لا ينشئ لاعبين وهميين. كل لاعب في `presence_list` مرتبط باتصال WebSocket حي، ويتم تنظيف الاتصال بعد انقطاعه أو انتهاء المهلة.
+إذا رفعت هذا السيرفر على رابط مختلف، يجب تغيير `WS_URL` داخل ملف اللعبة إلى رابط السيرفر الجديد.
+
+## ما يدعمه السيرفر
+
+- إنشاء غرفة من لاعبين.
+- دخول اللاعب الثاني إلى الغرفة.
+- اسم اللاعب ولونه ومال البداية.
+- جاهز / إلغاء الجاهزية.
+- بدء المعركة من صاحب الغرفة بعد جاهزية اللاعبين.
+- فصل اللاعب عند الخروج.
+- انتقال الغرفة من المضيف إلى اللاعب الآخر إذا غادر المضيف.
+- مزامنة snapshots للوحدات والمباني والنفط والـHP والمال بين لاعبي الغرفة.
+- heartbeat وhealth endpoint وتنظيف الغرف المهجورة.
+- منع أكثر من لاعبين في الغرفة.
+- تحديد معدل رسائل state لتخفيف الضغط.
+
+## ملاحظة هندسية
+
+هذا السيرفر هو relay/server-state layer متوافق مع بروتوكول اللعبة الحالي. اللعبة نفسها ما زالت تحسب الحركة والضرر محلياً ثم ترسل snapshot للسيرفر.
+
+للوصول إلى Multiplayer تنافسي حقيقي ومضاد للغش، الخطوة التالية هي نقل:
+الحركة، الاصطدام، الضرر، إطلاق النار، الإنتاج، المال، احتلال النفط، وتدمير المباني
+إلى محاكاة authoritative داخل السيرفر، ثم إرسال snapshots من السيرفر للعملاء.
