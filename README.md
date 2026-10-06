@@ -1,19 +1,58 @@
-# CONTROL BATTLE — Full Multiplayer Server
+# CONTROL BATTLE — Online Server
 
-Render:
-Build Command: npm install
-Start Command: npm start
-Health: /health
-WebSocket: wss://YOUR-RENDER-DOMAIN
+هذا مجلد سيرفر اللعبة الأونلاين.
 
-The server is authoritative for the 1v1 game and handles:
-- 2-player waiting room and match start
-- player colors and money
-- units and buildings
-- movement
-- attacks and damage
-- building
-- production
-- SCUD fire
-- state snapshots
-- fixed server tick
+## التشغيل
+
+يتطلب Node.js 18 أو أحدث.
+
+```bash
+npm install
+npm start
+```
+
+السيرفر يعمل افتراضياً على:
+
+```text
+ws://localhost:8080
+```
+
+وفحص الحالة:
+
+```text
+http://localhost:8080/health
+```
+
+## ربط اللعبة
+
+النسخة المرفقة من `index-online-authoritative.html` تستخدم `ws://localhost:8080` افتراضياً.
+
+عند نشر السيرفر خلف HTTPS/WSS يمكن وضع هذا قبل كود اللعبة:
+
+```html
+<script>
+window.GAME_SERVER_URL = "wss://YOUR-DOMAIN";
+</script>
+```
+
+## ما يملكه السيرفر
+
+- إنشاء وإدارة غرف 1 ضد 1.
+- دخول وخروج اللاعبين وحالة الجاهزية.
+- بدء المباراة وتحديد seed للمباراة.
+- نبض سيرفر ثابت 20Hz.
+- الحالة الأساسية للوحدات والمباني والقاعدة والاقتصاد.
+- معالجة أوامر الحركة، التوقف، الحماية والهجوم على السيرفر.
+- حركة الوحدات وقتالها الأساسي على السيرفر.
+- احتساب ضرر الوحدات والقاعدة ووقت إعادة الإطلاق.
+- احتساب دخل النفط على السيرفر.
+- التحقق من تكلفة إنشاء الوحدات والمباني الجديدة.
+- منع انتقال الوحدة لمسافات غير منطقية.
+- عدم قبول رفع HP أو المال كحقيقة بعد بدء المباراة.
+- إرسال حالة السيرفر لجميع اللاعبين 20 مرة في الثانية.
+
+## ملاحظة مهمة
+
+اللعبة الأصلية كبيرة جداً وتحتوي على مؤثرات Three.js وأنيميشن وتصادمات وعرض محلي. هذه النسخة تجعل حالة اللعب الشبكية الأساسية وقرارات الحركة/القتال والاقتصاد تحت سلطة Node.js، بينما يبقى المتصفح مسؤولاً عن الرسم والمؤثرات البصرية.
+
+قبل النشر العام، شغّل السيرفر على جهاز/خدمة Node.js حقيقية وافتح منفذ WebSocket عبر HTTPS/WSS.

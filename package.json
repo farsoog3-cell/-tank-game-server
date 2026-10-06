@@ -1,7 +1,8 @@
 {
-  "name": "control-battle-server",
-  "version": "1.0.2",
+  "name": "control-battle-multiplayer-server",
+  "version": "1.0.0",
   "private": true,
+  "description": "Authoritative WebSocket multiplayer server for CONTROL BATTLE",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +11,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.18.3"
   }
 }
