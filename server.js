@@ -63,12 +63,16 @@ function sendPresence() {
   broadcast({ type: 'presence_list', players: list });
 }
 function roomView(room) {
+  const host=players.get(room.host);
   return {
     code: room.code,
+    name: room.name || ('غرفة '+room.code),
     count: room.players.length,
     started: !!room.started,
-    hostName: players.get(room.host)?.name || 'Commander',
-    money: players.get(room.host)?.settings.money || 3000
+    hostName: host?.name || 'Commander',
+    hostColor: host?.settings?.color || '#168cff',
+    hostColorName: host?.settings?.colorName || 'BLUE',
+    money: host?.settings?.money || 3000
   };
 }
 function sendRooms() {
@@ -88,6 +92,7 @@ function sendRoomUpdate(room) {
     send(p, {
       type: 'room_update',
       room: room.code,
+      roomName: room.name || ('غرفة '+room.code),
       role: p.id === room.host ? 'host' : 'guest',
       players: ps
     });
@@ -147,7 +152,8 @@ function handle(p, m) {
       p.settings = cleanSettings(m.settings || p.settings);
       p.ready = false;
       const code = roomCode();
-      const room = { code, host: p.id, players: [p.id], started: false, state: null };
+      const roomName = cleanName(m.roomName || 'Desert Battle').slice(0,24);
+      const room = { code, name: roomName, host: p.id, players: [p.id], started: false, state: null };
       rooms.set(code, room);
       p.room = code;
       send(p, { type: 'room_created', room: code, role: 'host', players: roomPlayers(room) });
@@ -164,14 +170,16 @@ function handle(p, m) {
       p.name = cleanName(m.name || p.name);
       p.settings = cleanSettings(m.settings || p.settings);
       p.ready = false;
+      if (m.roomName && p.id === room.host) room.name = cleanName(m.roomName).slice(0,24);
       if (!room.players.includes(p.id)) room.players.push(p.id);
       p.room = code;
-      send(p, { type: 'room_joined', room: code, role: p.id === room.host ? 'host' : 'guest', players: roomPlayers(room) });
+      send(p, { type: 'room_joined', room: code, roomName: room.name || ('غرفة '+code), role: p.id === room.host ? 'host' : 'guest', players: roomPlayers(room) });
       sendRoomUpdate(room);
       return;
     }
 
     case 'settings': {
+      if (m.name !== undefined) p.name = cleanName(m.name);
       p.settings = cleanSettings(m.settings || p.settings);
       if (p.room) {
         const room = getRoomFor(p);
@@ -195,7 +203,7 @@ function handle(p, m) {
       const ps = roomPlayers(room);
       if (!ps.every(x => x.ready)) return send(p, { type: 'room_error', message: 'يجب أن يكون اللاعبان جاهزين.' });
       room.started = true;
-      const start = { type: 'battle_start', room: room.code, players: ps };
+      const start = { type: 'battle_start', room: room.code, roomName: room.name || ('غرفة '+room.code), players: ps };
       for (const id of room.players) send(players.get(id), start);
       sendRooms();
       return;
