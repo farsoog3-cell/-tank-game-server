@@ -162,7 +162,7 @@ function sendPresenceList() {
     room: c.roomCode || null,
     online: true
   }));
-  for (const c of clients.values()) send(c, { type: 'presence_list', players: list });
+  for (const c of clients.values()) send(c, { type: 'presence_list', players: list.map(p => ({ ...p, inRoom: !!p.room })) });
 }
 
 function broadcastRooms() {
@@ -173,10 +173,15 @@ function broadcastRooms() {
       roomName: r.name,
       hostId: r.hostId,
       players: roomPlayers(r),
+      hostName: r.players[0]?.name || 'Commander',
+      hostColorName: r.players[0]?.settings?.colorName || 'COLOR',
       count: r.players.length,
       maxPlayers: MAX_PLAYERS_PER_ROOM
     }));
-  for (const c of clients.values()) send(c, { type: 'rooms', rooms: list });
+  for (const c of clients.values()) {
+    send(c, { type: 'rooms', rooms: list });
+    send(c, { type: 'rooms_list', rooms: list });
+  }
 }
 
 function createRoom(client, msg) {
@@ -326,17 +331,17 @@ function handle(client, msg) {
       break;
 
     case 'get_rooms':
-      send(client, {
-        type: 'rooms',
-        rooms: [...rooms.values()].filter(r => !r.started).map(r => ({
-          room: r.code,
-          roomName: r.name,
-          hostId: r.hostId,
-          players: roomPlayers(r),
-          count: r.players.length,
-          maxPlayers: MAX_PLAYERS_PER_ROOM
-        }))
-      });
+      const openRooms = [...rooms.values()].filter(r => !r.started).map(r => ({
+        room: r.code, code: r.code,
+        roomName: r.name, name: r.name,
+        hostId: r.hostId,
+        players: roomPlayers(r),
+        hostName: r.players[0]?.name || 'Commander',
+        hostColorName: r.players[0]?.settings?.colorName || 'COLOR',
+        count: r.players.length, maxPlayers: MAX_PLAYERS_PER_ROOM
+      }));
+      send(client, { type: 'rooms', rooms: openRooms });
+      send(client, { type: 'rooms_list', rooms: openRooms });
       break;
 
     case 'create_room':
@@ -391,6 +396,7 @@ function handle(client, msg) {
         inviteId: crypto.randomUUID(),
         room: client.roomCode || '',
         fromId: client.id,
+        fromName: client.name,
         name: client.name,
         settings: client.settings
       });
