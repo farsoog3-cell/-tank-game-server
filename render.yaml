@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: tank-game-server
-    env: node
-    buildCommand: npm install
-    startCommand: node server.js
