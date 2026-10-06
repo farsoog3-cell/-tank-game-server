@@ -312,15 +312,11 @@ const wss=new WebSocket.Server({server});
 wss.on('connection',(ws)=>{
   const room=[...rooms.values()].find(r=>r.status==='waiting'&&r.players.size<2)||makeRoom();
   const team=room.players.size===0?'p1':'p2';
-  const player={id:id('p'),ws,team,name:`PLAYER ${team==='p1'?'1':'2'}`,color:team==='p1'?'#168cff':'#f43f5e',money:3000,startMoney:3000};
+  const player={id:id('p'),ws,team,name:`PLAYER ${team==='p1'?'1':'2'}`,color:team==='p1'?'#168cff':'#f43f5e',money:3000,startMoney:3000,configured:false};
   room.players.set(player.id,player);
   ws.roomId=room.id;ws.playerId=player.id;
   send(ws,{type:'welcome',playerId:player.id,team,roomId:room.id,serverTime:now(),map:MAP});
-  if(room.players.size===1){
-    send(ws,{type:'waiting',message:'بانتظار اللاعب الثاني...'});
-  }else{
-    startRoom(room);
-  }
+  send(ws,{type:'waiting',message:room.players.size===1?'بانتظار اللاعب الثاني...':'تم العثور على لاعب — بانتظار تأكيد الإعدادات...'});
   ws.on('message',(raw)=>{
     try{
       const msg=JSON.parse(raw.toString());
@@ -328,7 +324,8 @@ wss.on('connection',(ws)=>{
         player.name=String(msg.name||player.name).slice(0,24);
         player.color=/^#[0-9a-f]{6}$/i.test(msg.color||'')?msg.color:player.color;
         player.startMoney=clamp(cleanNum(msg.money,3000),1000,5000);
-        if(room.status==='waiting'&&room.players.size===2)startRoom(room);
+        player.configured=true;
+        if(room.status==='waiting'&&room.players.size===2&&[...room.players.values()].every(p=>p.configured))startRoom(room);
         return;
       }
       handleCommand(room,ws,msg);
