@@ -1,1 +1,15 @@
-{"name":"control-battle-server","version":"1.0.0","private":true,"main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"ws":"^8.18.0"},"engines":{"node":">=18"}}
+{
+  "name": "control-battle-server",
+  "version": "1.0.0",
+  "private": true,
+  "main": "control-battle-server.js",
+  "scripts": {
+    "start": "node control-battle-server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
