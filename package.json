@@ -1,12 +1,10 @@
 {
-  "name": "tank-game-pvp-server",
+  "name": "tank-game-gameranger-server",
   "version": "1.0.0",
   "private": true,
-  "type": "commonjs",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "ws": "^8.18.0"
-  }
+  "description": "WebSocket multiplayer server for the Tank Game browser RTS",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "ws": "^8.18.0" }
 }

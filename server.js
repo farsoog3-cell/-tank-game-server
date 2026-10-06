@@ -1,190 +1,284 @@
-const http = require("http");
-const { WebSocketServer } = require("ws");
-const crypto = require("crypto");
+'use strict';
+
+const http = require('http');
+const crypto = require('crypto');
+const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT || 10000);
-const MAX_PLAYERS = 2;
-const rooms = new Map();
-const sockets = new Map();
+const PRESENCE_TIMEOUT = 15000;
+const MAX_ROOMS = 1000;
 
+const players = new Map(); // id -> player
+const rooms = new Map();   // code -> room
+
+function now() { return Date.now(); }
+function uid() { return crypto.randomUUID(); }
 function roomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code;
-  do {
-    code = "";
-    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  } while (rooms.has(code));
+  do code = Math.random().toString(36).slice(2, 8).toUpperCase();
+  while (rooms.has(code));
   return code;
 }
 function cleanName(v) {
-  return String(v || "Commander").replace(/[<>]/g, "").trim().slice(0, 18) || "Commander";
+  const s = String(v || 'Commander').trim().slice(0, 24);
+  return s || 'Commander';
 }
-function cleanSettings(s) {
-  const money = [1000,2000,3000,4000].includes(Number(s?.money)) ? Number(s.money) : 3000;
-  const color = /^#[0-9a-fA-F]{6}$/.test(String(s?.color||"")) ? String(s.color) : "#168cff";
-  const colorName = String(s?.colorName||"BLUE").replace(/[<>]/g,"").slice(0,12);
-  return {money,color,colorName};
+function cleanColor(v) {
+  const s = String(v || '#168cff');
+  return /^#[0-9a-fA-F]{6}$/.test(s) ? s : '#168cff';
 }
-function send(ws,msg){if(ws&&ws.readyState===1)ws.send(JSON.stringify(msg));}
-function currentPlayer(id){return sockets.get(id);}
-function publicPresence() {
-  return [...sockets.values()]
-    .filter(p=>p && p.ws && p.ws.readyState===1 && p.name)
-    .map(p=>({
-      id:p.id,name:p.name,settings:p.settings||cleanSettings(),inRoom:!!p.room,
-      status:p.room && rooms.get(p.room)?.started ? "playing" : (p.room ? "room" : "online")
-    }));
+function cleanSettings(s = {}) {
+  return {
+    money: Math.max(0, Number(s.money) || 3000),
+    color: cleanColor(s.color),
+    colorName: String(s.colorName || 'BLUE').slice(0, 20).toUpperCase()
+  };
 }
-function broadcastPresence(){
-  const payload={type:"presence_list",players:publicPresence()};
-  for(const p of sockets.values())send(p.ws,payload);
+function send(p, message) {
+  if (!p || !p.ws || p.ws.readyState !== 1) return false;
+  try { p.ws.send(JSON.stringify(message)); return true; } catch (_) { return false; }
 }
-function publicPlayers(room) {
-  return [...room.players.values()].map(p=>({
-    id:p.id,name:p.name,role:p.role,ready:p.ready,settings:p.settings
-  }));
+function broadcast(message, filter = () => true) {
+  for (const p of players.values()) if (filter(p)) send(p, message);
 }
-function broadcastRoom(room) {
-  const payload={type:"room_update",room:room.code,players:publicPlayers(room)};
-  for(const p of room.players.values())send(p.ws,payload);
-  broadcastPresence();
+function playerView(p) {
+  return {
+    id: p.id,
+    name: p.name,
+    online: true,
+    inRoom: !!p.room,
+    room: p.room || null,
+    settings: { ...p.settings },
+    ready: !!p.ready
+  };
 }
-function removeFromRoom(p,reason="left"){
-  if(!p?.room)return;
-  const room=rooms.get(p.room); if(!room){p.room=null;return;}
-  room.players.delete(p.id);p.room=null;p.ready=false;
-  if(room.hostId===p.id){
-    const next=room.players.values().next().value;
-    if(next){next.role="host";room.hostId=next.id;}
+function presenceList() {
+  const t = now();
+  return [...players.values()]
+    .filter(p => p.ws && p.ws.readyState === 1 && t - p.lastSeen <= PRESENCE_TIMEOUT)
+    .map(playerView);
+}
+function sendPresence() {
+  const list = presenceList();
+  broadcast({ type: 'presence_list', players: list });
+}
+function roomView(room) {
+  return {
+    code: room.code,
+    count: room.players.length,
+    started: !!room.started,
+    hostName: players.get(room.host)?.name || 'Commander',
+    money: players.get(room.host)?.settings.money || 3000
+  };
+}
+function sendRooms() {
+  const list = [...rooms.values()]
+    .filter(r => !r.started && r.players.length > 0)
+    .map(roomView);
+  broadcast({ type: 'rooms_list', rooms: list });
+}
+function roomPlayers(room) {
+  return room.players.map(id => players.get(id)).filter(Boolean).map(playerView);
+}
+function sendRoomUpdate(room) {
+  const ps = roomPlayers(room);
+  for (const id of room.players) {
+    const p = players.get(id);
+    if (!p) continue;
+    send(p, {
+      type: 'room_update',
+      room: room.code,
+      role: p.id === room.host ? 'host' : 'guest',
+      players: ps
+    });
   }
-  for(const other of room.players.values())send(other.ws,{type:"peer_left",reason});
-  if(room.players.size===0)rooms.delete(room.code); else broadcastRoom(room);
-  broadcastPresence();
+  sendRooms();
+  sendPresence();
 }
-function ensurePresence(ws,id,name,settings){
-  let p=sockets.get(id);
-  if(!p){
-    p={id,ws,name:cleanName(name),settings:cleanSettings(settings),ready:false,room:null,role:null};
-    sockets.set(id,p);
-  } else {
-    p.ws=ws;
-    if(name!==undefined)p.name=cleanName(name);
-    if(settings)p.settings=cleanSettings(settings);
+function leaveRoom(p, notifyPeer = true) {
+  if (!p.room) return;
+  const code = p.room;
+  const room = rooms.get(code);
+  p.room = null;
+  p.ready = false;
+  if (!room) return;
+  room.players = room.players.filter(id => id !== p.id);
+  if (notifyPeer) {
+    for (const id of room.players) {
+      const peer = players.get(id);
+      if (peer) { peer.ready = false; send(peer, { type: 'peer_left', playerId: p.id }); }
+    }
   }
-  return p;
-}
-function createRoomFor(p){
-  if(p.room){
-    const old=rooms.get(p.room);
-    if(old)return old;
+  if (room.players.length === 0 || room.started) rooms.delete(code);
+  else {
+    room.host = room.players[0];
+    sendRoomUpdate(room);
   }
-  const code=roomCode();
-  const room={code,hostId:p.id,players:new Map(),started:false};
-  rooms.set(code,room);
-  p.room=code;p.role="host";p.ready=false;
-  room.players.set(p.id,p);
-  return room;
+  sendRooms();
+  sendPresence();
 }
-function startBattle(room){
-  if(room.players.size!==2 || ![...room.players.values()].every(p=>p.ready))return;
-  room.started=true;
-  const payload={type:"battle_start",room:room.code,players:publicPlayers(room)};
-  for(const p of room.players.values())send(p.ws,payload);
-  broadcastPresence();
+function removePlayer(p) {
+  leaveRoom(p, true);
+  players.delete(p.id);
+  sendPresence();
+  sendRooms();
 }
+function getRoomFor(p) { return p.room ? rooms.get(p.room) : null; }
 
-const server=http.createServer((req,res)=>{
-  if(req.url==="/"||req.url==="/health"){
-    res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8","Access-Control-Allow-Origin":"*"});
-    res.end("Tank Game Multiplayer Server is running");
-    return;
-  }
-  res.writeHead(404,{"Content-Type":"text/plain; charset=utf-8"});res.end("Not found");
-});
-const wss=new WebSocketServer({server,path:"/ws"});
+function handle(p, m) {
+  if (!m || typeof m !== 'object') return;
+  p.lastSeen = now();
 
-wss.on("connection",ws=>{
-  const id=crypto.randomUUID();
-  const temp={id,ws,name:null,settings:cleanSettings(),ready:false,room:null,role:null};
-  sockets.set(id,temp);
-  send(ws,{type:"hello",id});
-  broadcastPresence();
+  switch (m.type) {
+    case 'presence':
+      if (m.name !== undefined) p.name = cleanName(m.name);
+      if (m.settings) p.settings = cleanSettings(m.settings);
+      sendPresence();
+      return;
 
-  ws.on("message",raw=>{
-    let m;try{m=JSON.parse(raw.toString())}catch{return}
-    let p=sockets.get(id);
-    if(m.type==="presence"){
-      p=ensurePresence(ws,id,m.name,m.settings);
-      send(ws,{type:"presence_list",players:publicPresence()});
-      broadcastPresence();
+    case 'get_rooms':
+      send(p, { type: 'rooms_list', rooms: [...rooms.values()].filter(r => !r.started && r.players.length > 0).map(roomView) });
+      return;
+
+    case 'create_room': {
+      if (p.room) leaveRoom(p, false);
+      if (rooms.size >= MAX_ROOMS) return send(p, { type: 'room_error', message: 'السيرفر ممتلئ حاليًا.' });
+      p.name = cleanName(m.name || p.name);
+      p.settings = cleanSettings(m.settings || p.settings);
+      p.ready = false;
+      const code = roomCode();
+      const room = { code, host: p.id, players: [p.id], started: false, state: null };
+      rooms.set(code, room);
+      p.room = code;
+      send(p, { type: 'room_created', room: code, role: 'host', players: roomPlayers(room) });
+      sendRoomUpdate(room);
       return;
     }
-    if(m.type==="create_room"){
-      p=ensurePresence(ws,id,m.name,m.settings);
-      if(p.room)removeFromRoom(p);
-      const room=createRoomFor(p);
-      send(ws,{type:"room_created",room:room.code,role:"host",players:publicPlayers(room)});
-      broadcastPresence();
+
+    case 'join_room': {
+      const code = String(m.room || '').trim().toUpperCase();
+      const room = rooms.get(code);
+      if (!room || room.started) return send(p, { type: 'room_error', message: 'الغرفة غير موجودة أو بدأت بالفعل.' });
+      if (room.players.length >= 2) return send(p, { type: 'room_error', message: 'الغرفة ممتلئة.' });
+      if (p.room && p.room !== code) leaveRoom(p, false);
+      p.name = cleanName(m.name || p.name);
+      p.settings = cleanSettings(m.settings || p.settings);
+      p.ready = false;
+      if (!room.players.includes(p.id)) room.players.push(p.id);
+      p.room = code;
+      send(p, { type: 'room_joined', room: code, role: p.id === room.host ? 'host' : 'guest', players: roomPlayers(room) });
+      sendRoomUpdate(room);
       return;
-    }
-    if(m.type==="join_room"||m.type==="accept_invite"){
-      p=ensurePresence(ws,id,m.name,m.settings);
-      const code=String(m.room||"").toUpperCase(),room=rooms.get(code);
-      if(!room)return send(ws,{type:"room_error",message:"الغرفة غير موجودة."});
-      if(room.started)return send(ws,{type:"room_error",message:"المعركة بدأت بالفعل."});
-      if(room.players.size>=MAX_PLAYERS)return send(ws,{type:"room_error",message:"الغرفة ممتلئة."});
-      if(p.room)removeFromRoom(p);
-      p.room=code;p.role="guest";p.ready=false;room.players.set(p.id,p);
-      send(ws,{type:"room_joined",room:code,role:"guest",players:publicPlayers(room)});
-      broadcastRoom(room);return;
     }
 
-    p=sockets.get(id);
-    const room=p?.room?rooms.get(p.room):null;
+    case 'settings': {
+      p.settings = cleanSettings(m.settings || p.settings);
+      if (p.room) {
+        const room = getRoomFor(p);
+        if (room && !room.started) sendRoomUpdate(room);
+      }
+      sendPresence();
+      return;
+    }
 
-    if(m.type==="settings"&&p){
-      p.settings=cleanSettings(m.settings);
-      if(room)broadcastRoom(room);else broadcastPresence();
+    case 'ready': {
+      const room = getRoomFor(p);
+      if (!room || room.started) return;
+      p.ready = !!m.ready;
+      sendRoomUpdate(room);
       return;
     }
-    if(m.type==="ready"&&p&&room){
-      p.ready=!!m.ready;broadcastRoom(room);return;
-    }
-    if(m.type==="start_battle"&&p&&room){
-      if(p.id!==room.hostId)return;
-      startBattle(room);return;
-    }
-    if(m.type==="invite"&&p){
-      const target=sockets.get(String(m.targetId||""));
-      if(!target||!target.ws||target.ws.readyState!==1||target.id===p.id)
-        return send(ws,{type:"invite_error",message:"اللاعب غير متصل."});
-      if(target.room)return send(ws,{type:"invite_error",message:"اللاعب داخل غرفة أو معركة حاليًا."});
-      const room2=createRoomFor(p);
-      const inviteId=crypto.randomUUID();
-      send(target.ws,{type:"invite",inviteId,room:room2.code,fromId:p.id,fromName:p.name,settings:p.settings});
-      send(ws,{type:"invite_sent",name:target.name,room:room2.code});
-      broadcastPresence();
+
+    case 'start_battle': {
+      const room = getRoomFor(p);
+      if (!room || room.started || room.host !== p.id || room.players.length !== 2) return;
+      const ps = roomPlayers(room);
+      if (!ps.every(x => x.ready)) return send(p, { type: 'room_error', message: 'يجب أن يكون اللاعبان جاهزين.' });
+      room.started = true;
+      const start = { type: 'battle_start', room: room.code, players: ps };
+      for (const id of room.players) send(players.get(id), start);
+      sendRooms();
       return;
     }
-    if(m.type==="reject_invite"){
-      // Invitations are non-blocking; nothing else is required.
+
+    case 'leave_room':
+      leaveRoom(p, true);
+      return;
+
+    case 'invite': {
+      const target = players.get(String(m.targetId || ''));
+      if (!target || target.id === p.id || target.ws.readyState !== 1) return send(p, { type: 'room_error', message: 'اللاعب غير متصل.' });
+      if (target.room) return send(p, { type: 'room_error', message: 'اللاعب داخل غرفة بالفعل.' });
+      send(target, { type: 'invite', room: p.room || null, fromId: p.id, fromName: cleanName(m.name || p.name), settings: cleanSettings(m.settings || p.settings) });
       return;
     }
-    if(m.type==="state"&&p&&room&&room.started){
-      for(const other of room.players.values()){
-        if(other.id!==p.id)send(other.ws,{type:"state",from:p.id,state:m.state||{}});
+
+    case 'accept_invite': {
+      const code = String(m.room || '').toUpperCase();
+      const room = rooms.get(code);
+      if (!room || room.started || room.players.length >= 2) return send(p, { type: 'room_error', message: 'الدعوة لم تعد متاحة.' });
+      p.name = cleanName(m.name || p.name);
+      p.settings = cleanSettings(m.settings || p.settings);
+      if (!p.room) { room.players.push(p.id); p.room = code; p.ready = false; }
+      sendRoomUpdate(room);
+      return;
+    }
+
+    case 'reject_invite':
+      return;
+
+    case 'state': {
+      const room = getRoomFor(p);
+      if (!room || !room.started) return;
+      room.state = m.state || null;
+      for (const id of room.players) if (id !== p.id) {
+        const peer = players.get(id);
+        if (peer) send(peer, { type: 'state', state: m.state });
       }
       return;
     }
-    if(m.type==="leave_room"&&p){removeFromRoom(p);return;}
-  });
 
-  ws.on("close",()=>{
-    const p=sockets.get(id);
-    if(p)removeFromRoom(p,"disconnect");
-    sockets.delete(id);
-    broadcastPresence();
-  });
+    default:
+      return;
+  }
+}
+
+const server = http.createServer((req, res) => {
+  if (req.url === '/' || req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ ok: true, service: 'Tank Game GameRanger Server', websocket: '/ws', database: false, rooms: rooms.size, players: presenceList().length, uptime: process.uptime(), time: Date.now() }));
+  }
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: false, error: 'not_found' }));
 });
 
-server.listen(PORT,()=>console.log(`Tank Game Multiplayer Server listening on ${PORT}`));
+const wss = new WebSocketServer({ server, path: '/ws' });
+wss.on('connection', ws => {
+  const p = { id: uid(), ws, name: 'Commander', settings: cleanSettings(), room: null, ready: false, lastSeen: now() };
+  players.set(p.id, p);
+  send(p, { type: 'hello', id: p.id });
+  sendPresence();
+
+  ws.on('message', data => {
+    try { handle(p, JSON.parse(data.toString())); } catch (_) { send(p, { type: 'room_error', message: 'رسالة غير صالحة.' }); }
+  });
+  ws.on('pong', () => { p.lastSeen = now(); });
+  ws.on('close', () => removePlayer(p));
+  ws.on('error', () => {});
+});
+
+setInterval(() => {
+  const t = now();
+  for (const p of [...players.values()]) {
+    if (!p.ws || p.ws.readyState !== 1 || t - p.lastSeen > PRESENCE_TIMEOUT) {
+      try { p.ws?.terminate(); } catch (_) {}
+      removePlayer(p);
+    } else {
+      try { p.ws.ping(); } catch (_) {}
+    }
+  }
+  sendPresence();
+  sendRooms();
+}, 5000);
+
+server.listen(PORT, '0.0.0.0', () => console.log(`Tank Game server listening on ${PORT}`));
