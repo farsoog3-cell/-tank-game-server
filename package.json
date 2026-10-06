@@ -1,11 +1,12 @@
 {
-  "name": "tank-game-pvp-server",
+  "name": "tank-game-authoritative-server",
   "version": "1.0.0",
   "private": true,
-  "description": "WebSocket room and PvP relay server for the Tank Game HTML client",
+  "description": "Authoritative WebSocket room/referee server for the Tank Game PvP client.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "engines": {
     "node": ">=18"
