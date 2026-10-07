@@ -15,6 +15,7 @@ const MAX_PAYLOAD = 5 * 1024 * 1024;
 const ROOM_LIMIT = 2;
 const rooms = new Map();
 const clients = new Map();
+const STATE_MAX_AGE = 5000;
 
 const publicDir = path.join(__dirname, 'public');
 
@@ -176,7 +177,9 @@ function mergeAndBroadcastState(room) {
     slot: p.slot,
     color: p.color,
     name: p.name,
-    state: p.state || { money: room.money, units: [], buildings: [], oil: [], base: null },
+    state: (p.state && Date.now() - (p.lastStateAt || 0) <= STATE_MAX_AGE)
+      ? p.state
+      : { money: room.money, units: [], buildings: [], oil: [], base: null },
     receivedAt: p.lastStateAt || 0
   }));
   const packet = { tick: Date.now(), roomId: room.id, players };

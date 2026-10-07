@@ -81,3 +81,6 @@ wss://tank-game-server-o650.onrender.com
 - حالة اللاعب التي يرسلها العميل تُجمع في `server_state` ليشاهدها الطرف الآخر.
 
 > ملاحظة: WebSocket على Render يعمل عبر `wss://` عند الوصول عبر HTTPS، وRender يتطلب أن يستمع تطبيق الويب على `0.0.0.0` والمنفذ الذي توفره البيئة. 
+
+### Multiplayer synchronization fix
+The bundled game now uses deterministic terrain texture generation so both clients see the same terrain appearance. The online bridge also synchronizes remote units, factories, barracks, base HP, colors, and player money. Remote entities are marked as server-remote and are excluded from local AI/movement simulation.
