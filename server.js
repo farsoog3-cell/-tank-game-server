@@ -1,511 +1,277 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
+'use strict';
 
-const PORT = process.env.PORT || 3000;
+const http = require('http');
+const crypto = require('crypto');
+const WebSocket = require('ws');
 
-const app = express();
-const httpServer = http.createServer(app);
+const PORT = Number(process.env.PORT || 10000);
+const MAX_ROOMS = 200;
+const MAX_PLAYERS = 2;
+const ROOM_TTL_MS = 30 * 60 * 1000;
+const DISCONNECT_GRACE_MS = 20 * 1000;
+const SNAPSHOT_MIN_MS = 50;
+const MAX_PAYLOAD = 1024 * 1024;
+const MAP_LIMIT = 420;
+const PROTOCOL_VERSION = 4;
 
-const io = new Server(httpServer, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  },
-  transports: ["websocket", "polling"]
-});
-
-app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    game: "TANK COMMAND",
-    status: "online",
-    rooms: rooms.size,
-    players: io.engine.clientsCount
-  });
-});
-
-// rooms:
-// roomId -> {
-//   hostId: string,
-//   started: boolean,
-//   createdAt: number,
-//   players: Map<socketId, player>
-// }
 const rooms = new Map();
+const clients = new Map();
 
-function cleanRoomId(value) {
-  return String(value || "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_-]/g, "")
-    .slice(0, 24);
+const COLORS = new Set([
+  '#168cff','#ef4444','#22c55e','#f59e0b','#a855f7','#06b6d4','#f97316','#e11d48'
+]);
+
+function id(prefix='id') {
+  return prefix + '_' + crypto.randomBytes(9).toString('base64url');
 }
-
-function makePlayer(socket, roomId) {
+function token() { return crypto.randomBytes(24).toString('base64url'); }
+function now() { return Date.now(); }
+function safeName(v) {
+  const s = String(v ?? '').replace(/[<>\u0000-\u001f]/g, '').trim();
+  return s.slice(0, 32) || 'لاعب';
+}
+function safeColor(v) {
+  const s = String(v || '').toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(s) && COLORS.has(s) ? s : '#168cff';
+}
+function safeMoney(v) {
+  const n = Number(v);
+  return [1000, 2000, 3000, 5000, 10000].includes(n) ? n : 1000;
+}
+function clamp(n,a,b) { return Math.max(a, Math.min(b,n)); }
+function finite(v,f=0) { return Number.isFinite(Number(v)) ? Number(v) : f; }
+function send(c, msg) {
+  if (!c || c.ws.readyState !== WebSocket.OPEN) return false;
+  try { c.ws.send(JSON.stringify(msg)); return true; } catch { return false; }
+}
+function broadcastRoom(room, msg) {
+  for (const p of room.players.values()) send(p, msg);
+}
+function publicPlayer(p) {
+  return { id:p.id, name:p.name, color:p.color, ready:!!p.ready };
+}
+function publicRoom(room) {
   return {
-    id: socket.id,
-    roomId,
-
-    // World state
-    x: 0,
-    y: 0,
-    z: 0,
-    rotY: 0,
-
-    // Gameplay state
-    health: 100,
-    maxHealth: 100,
-    alive: true,
-
-    // Optional lobby data
-    name: `Player ${socket.id.slice(-4)}`,
-    color: null
+    id: room.id,
+    name: room.name,
+    players: room.players.size,
+    maxPlayers: MAX_PLAYERS,
+    money: room.money,
+    started: room.started,
+    createdAt: room.createdAt,
+    public: true
   };
 }
-
-function serializePlayer(player) {
+function lobbyRoom(room) {
   return {
-    id: player.id,
-    x: player.x,
-    y: player.y,
-    z: player.z,
-    rotY: player.rotY,
-    health: player.health,
-    maxHealth: player.maxHealth,
-    alive: player.alive,
-    name: player.name,
-    color: player.color
+    ...publicRoom(room),
+    players: [...room.players.values()].map(publicPlayer)
   };
 }
-
-function getRoom(roomId) {
-  return rooms.get(roomId);
+function listRooms() {
+  return [...rooms.values()]
+    .filter(r => !r.started && r.players.size < MAX_PLAYERS && now()-r.createdAt < ROOM_TTL_MS)
+    .map(publicRoom);
 }
 
-function getPlayerRoom(socket) {
-  const roomId = socket.data.roomId;
-  return roomId ? rooms.get(roomId) : null;
+function createRoom(c, payload) {
+  if (c.room) return send(c,{type:'room_error',message:'أنت داخل غرفة بالفعل'});
+  if (rooms.size >= MAX_ROOMS) return send(c,{type:'room_error',message:'السيرفر ممتلئ حاليًا'});
+  const room = {
+    id:id('room'), name:safeName(payload.name || 'غرفة جماعية'), money:safeMoney(payload.money),
+    createdAt:now(), lastActivity:now(), started:false, startAt:0, seed:crypto.randomInt(1, 0x7fffffff),
+    players:new Map(), snapshots:new Map(), disconnectTimers:new Map()
+  };
+  room.players.set(c.id, c);
+  c.room=room; c.slot=1; c.ready=false; c.resumeToken=token();
+  rooms.set(room.id,room);
+  send(c,{type:'room_created',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
+  broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
 }
 
-function leaveCurrentRoom(socket, notify = true) {
-  const roomId = socket.data.roomId;
-  if (!roomId) return;
+function joinRoom(c, payload) {
+  if (c.room) return send(c,{type:'room_error',message:'أنت داخل غرفة بالفعل'});
+  const room=rooms.get(String(payload.roomId||''));
+  if (!room) return send(c,{type:'room_error',message:'الغرفة غير موجودة'});
+  if (room.started) return send(c,{type:'room_error',message:'المباراة بدأت بالفعل'});
+  if (room.players.size>=MAX_PLAYERS) return send(c,{type:'room_error',message:'الغرفة ممتلئة'});
+  room.lastActivity=now();
+  c.room=room; c.slot=2; c.ready=false; c.resumeToken=token();
+  c.name=safeName(payload.name||'لاعب'); c.color=safeColor(payload.color);
+  room.players.set(c.id,c);
+  send(c,{type:'room_joined',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
+  broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
+}
 
-  const room = rooms.get(roomId);
-  socket.data.roomId = null;
-
+function leaveRoom(c, silent=false) {
+  const room=c.room;
   if (!room) return;
-
-  room.players.delete(socket.id);
-
-  if (notify) {
-    socket.to(roomId).emit("playerDisconnected", socket.id);
-  }
-
-  // Pick a new host if the old host left.
-  if (room.hostId === socket.id) {
-    const nextPlayer = room.players.values().next().value;
-    room.hostId = nextPlayer ? nextPlayer.id : null;
-
-    if (room.hostId) {
-      io.to(roomId).emit("roomHostChanged", {
-        hostId: room.hostId
-      });
-    }
-  }
-
-  if (room.players.size === 0) {
-    rooms.delete(roomId);
+  room.players.delete(c.id);
+  room.snapshots.delete(c.id);
+  room.lastActivity=now();
+  c.room=null; c.slot=0; c.ready=false;
+  if (room.disconnectTimers.has(c.id)) { clearTimeout(room.disconnectTimers.get(c.id)); room.disconnectTimers.delete(c.id); }
+  if (room.started) {
+    if (room.players.size===0) rooms.delete(room.id);
+    else broadcastRoom(room,{type:'match_end',result:{winnerId:[...room.players.keys()][0],reason:'opponent_left'}});
   } else {
-    io.to(roomId).emit("roomPlayers", getRoomPlayers(room));
+    if (!silent) send(c,{type:'room_left',roomId:room.id});
+    if (room.players.size===0) rooms.delete(room.id);
+    else broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
   }
 }
 
-function getRoomPlayers(room) {
-  const result = {};
-  for (const [id, player] of room.players) {
-    result[id] = serializePlayer(player);
+function toggleReady(c) {
+  const room=c.room;
+  if (!room) return send(c,{type:'room_error',message:'أنت لست داخل غرفة'});
+  if (room.started) return;
+  c.ready=!c.ready; room.lastActivity=now();
+  broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
+  if (room.players.size===MAX_PLAYERS && [...room.players.values()].every(p=>p.ready)) startMatch(room);
+}
+
+function setColor(c,payload) {
+  if (!c.room || c.room.started) return;
+  c.color=safeColor(payload.color); c.room.lastActivity=now();
+  broadcastRoom(c.room,{type:'room_state',room:lobbyRoom(c.room)});
+}
+
+function startMatch(room) {
+  if (room.started || room.players.size!==MAX_PLAYERS) return;
+  const players=[...room.players.values()].sort((a,b)=>a.slot-b.slot);
+  if (!players.every(p=>p.ready)) return;
+  room.started=true; room.startAt=now()+1200; room.lastActivity=now();
+  for (const p of players) {
+    p.ready=true;
+    room.snapshots.set(p.id,{seq:0,state:null,receivedAt:0});
   }
-  return result;
-}
-
-function sendRoomState(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-
-  io.to(roomId).emit("roomPlayers", getRoomPlayers(room));
-}
-
-function createOrResetRoom(roomId, socket) {
-  let room = rooms.get(roomId);
-
-  if (!room) {
-    room = {
-      hostId: socket.id,
-      started: false,
-      createdAt: Date.now(),
-      players: new Map()
-    };
-    rooms.set(roomId, room);
+  for (const p of players) {
+    const opponent=players.find(x=>x.id!==p.id);
+    send(p,{
+      type:'game_start', roomId:room.id, playerSlot:p.slot,
+      playerServerId:p.id, opponentServerId:opponent.id,
+      opponentId:opponent.id, seed:room.seed, serverTime:room.startAt,
+      resumeToken:p.resumeToken, protocolVersion:PROTOCOL_VERSION,
+      config:{money:room.money,player:{id:p.id,name:p.name,color:p.color,colorName:'PLAYER'},opponent:{id:opponent.id,name:opponent.name,color:opponent.color,colorName:'OPPONENT'}}
+    });
   }
-
-  return room;
 }
 
-io.on("connection", (socket) => {
-  console.log("CONNECTED:", socket.id);
-
-  socket.emit("serverReady", {
-    id: socket.id,
-    time: Date.now()
-  });
-
-  // -------------------------
-  // CREATE ROOM
-  // -------------------------
-  socket.on("createRoom", (rawRoomId, callback) => {
-    const roomId = cleanRoomId(rawRoomId);
-
-    if (!roomId) {
-      return reply(callback, {
-        ok: false,
-        error: "INVALID_ROOM"
-      });
+function sanitizeUnit(u, index) {
+  if (!u || typeof u !== 'object') return null;
+  const idv=String(u.id||'').slice(0,80); if (!idv) return null;
+  return {
+    id:idv, type:String(u.type||'normal').slice(0,24), infantry:!!u.infantry, builder:!!u.builder,
+    x:clamp(finite(u.x),-MAP_LIMIT,MAP_LIMIT), z:clamp(finite(u.z),-MAP_LIMIT,MAP_LIMIT), y:clamp(finite(u.y),-100,100),
+    rot:finite(u.rot), hp:clamp(finite(u.hp,100),0,100000), maxHp:clamp(finite(u.maxHp,100),1,100000),
+    destroyed:!!u.destroyed,
+    target:u.target&&typeof u.target==='object'?{x:clamp(finite(u.target.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(u.target.z),-MAP_LIMIT,MAP_LIMIT)}:null,
+    guard:u.guard&&typeof u.guard==='object'?{x:clamp(finite(u.guard.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(u.guard.z),-MAP_LIMIT,MAP_LIMIT)}:null
+  };
+}
+function sanitizeBuilding(b) {
+  if (!b || typeof b!=='object' || !b.id) return null;
+  const out={id:String(b.id).slice(0,80),type:String(b.type||'building').slice(0,24),x:clamp(finite(b.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(b.z),-MAP_LIMIT,MAP_LIMIT),y:clamp(finite(b.y),-100,100),rot:finite(b.rot),hp:clamp(finite(b.hp,1000),0,100000),maxHp:clamp(finite(b.maxHp,1000),1,100000),done:b.done!==false,destroyed:!!b.destroyed,owner:'player',progress:clamp(finite(b.progress,b.done===false?0:1),0,1)};
+  if (b.production && typeof b.production==='object') out.production={type:String(b.production.type||'unknown').slice(0,30),elapsed:clamp(finite(b.production.elapsed),0,3600000),duration:clamp(finite(b.production.duration,1),1,3600000)};
+  return out;
+}
+function sanitizeState(state) {
+  if (!state || typeof state!=='object') return null;
+  const units=Array.isArray(state.units)?state.units.slice(0,150).map(sanitizeUnit).filter(Boolean):[];
+  const buildings=Array.isArray(state.buildings)?state.buildings.slice(0,80).map(sanitizeBuilding).filter(Boolean):[];
+  const oil=Array.isArray(state.oil)?state.oil.slice(0,16).map(r=>({id:String(r.id||'').slice(0,80),x:clamp(finite(r.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(r.z),-MAP_LIMIT,MAP_LIMIT),hp:clamp(finite(r.hp,700),0,100000),maxHp:clamp(finite(r.maxHp,700),1,100000),owner:['player','enemy','none'].includes(r.owner)?r.owner:'none',captureProgress:clamp(finite(r.captureProgress),0,1)})):[];
+  return {money:clamp(Math.floor(finite(state.money)),0,100000000),units,buildings,oil,base:state.base?{hp:clamp(finite(state.base.hp,1600),0,1000000),maxHp:clamp(finite(state.base.maxHp,1600),1,1000000)}:null,__seq:Math.max(0,Math.floor(finite(state.__seq))),__clientTime:finite(state.__clientTime)};
+}
+function receiveGameEvent(c,payload) {
+  const room=c.room;
+  if (!room || !room.started) return;
+  if (!payload || typeof payload!=='object') return;
+  if (payload.kind==='authoritative_snapshot') {
+    const nowMs=now(); const rec=room.snapshots.get(c.id)||{seq:0,state:null,receivedAt:0};
+    if (nowMs-rec.receivedAt<SNAPSHOT_MIN_MS) return;
+    const state=sanitizeState(payload.state); if (!state) return;
+    if (state.__seq<rec.seq) return;
+    rec.seq=state.__seq; rec.state=state; rec.receivedAt=nowMs; room.snapshots.set(c.id,rec); room.lastActivity=nowMs;
+    const packet={tick:Math.floor((nowMs-room.startAt)/50),serverTime:nowMs,players:[]};
+    for (const p of room.players.values()) {
+      const s=room.snapshots.get(p.id); if (!s?.state) continue;
+      packet.players.push({id:p.id,name:p.name,color:p.color,slot:p.slot,state:s.state});
     }
+    broadcastRoom(room,{type:'server_state',state:packet});
+    return;
+  }
+  // Generic peer messages are intentionally limited in size and never interpreted as server commands.
+  const raw=JSON.stringify(payload); if (raw.length>50000) return;
+  for (const p of room.players.values()) if (p.id!==c.id) send(p,{type:'peer_message',payload:{...payload,from:c.id}});
+}
 
-    // Do not silently destroy an existing room.
-    if (rooms.has(roomId) && rooms.get(roomId).players.size > 0) {
-      return reply(callback, {
-        ok: false,
-        error: "ROOM_EXISTS"
-      });
-    }
+function resumeRoom(c,payload) {
+  const room=rooms.get(String(payload.roomId||''));
+  if (!room) return send(c,{type:'room_error',message:'جلسة الغرفة انتهت'});
+  const old=[...room.players.values()].find(p=>p.resumeToken===String(payload.resumeToken||''));
+  if (!old) return send(c,{type:'room_error',message:'رمز الاستعادة غير صالح'});
+  if (old.ws===c.ws) return;
+  if (old.disconnectTimer) clearTimeout(old.disconnectTimer);
+  // Transfer the player identity to the new WebSocket.
+  clients.delete(old.id);
+  c.id=old.id; c.name=old.name; c.color=old.color; c.slot=old.slot; c.ready=old.ready; c.resumeToken=old.resumeToken; c.room=room;
+  room.players.set(c.id,c); clients.set(c.id,c);
+  send(c,{type:'room_state',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
+  if (room.started) {
+    const opponent=[...room.players.values()].find(p=>p.id!==c.id);
+    if (opponent) send(c,{type:'game_start',roomId:room.id,playerSlot:c.slot,playerServerId:c.id,opponentServerId:opponent.id,opponentId:opponent.id,seed:room.seed,serverTime:room.startAt,resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION,config:{money:room.money,player:{id:c.id,name:c.name,color:c.color,colorName:'PLAYER'},opponent:{id:opponent.id,name:opponent.name,color:opponent.color,colorName:'OPPONENT'}}});
+  }
+}
 
-    leaveCurrentRoom(socket, true);
+function handle(c,msg) {
+  if (!msg || typeof msg!=='object' || typeof msg.type!=='string') return;
+  switch(msg.type) {
+    case 'list_rooms': send(c,{type:'rooms',rooms:listRooms()}); break;
+    case 'create_room': createRoom(c,msg); break;
+    case 'join_room': joinRoom(c,msg); break;
+    case 'leave_room': leaveRoom(c); break;
+    case 'toggle_ready': toggleReady(c); break;
+    case 'set_color': setColor(c,msg); break;
+    case 'resume_room': resumeRoom(c,msg); break;
+    case 'game_event': receiveGameEvent(c,msg.payload); break;
+    case 'ping': send(c,{type:'pong',serverTime:now()}); break;
+    default: send(c,{type:'room_error',message:'أمر غير معروف'});
+  }
+}
 
-    const room = createOrResetRoom(roomId, socket);
-    const player = makePlayer(socket, roomId);
-
-    room.players.set(socket.id, player);
-    socket.join(roomId);
-    socket.data.roomId = roomId;
-
-    socket.emit("roomJoined", roomId);
-    socket.emit("roomInfo", {
-      roomId,
-      hostId: room.hostId,
-      started: room.started
-    });
-
-    sendRoomState(room);
-
-    reply(callback, {
-      ok: true,
-      roomId,
-      hostId: room.hostId
-    });
-
-    console.log(`ROOM CREATED: ${roomId} by ${socket.id}`);
-  });
-
-  // -------------------------
-  // JOIN ROOM
-  // -------------------------
-  socket.on("joinRoom", (rawRoomId, callback) => {
-    const roomId = cleanRoomId(rawRoomId);
-    const room = rooms.get(roomId);
-
-    if (!room) {
-      return reply(callback, {
-        ok: false,
-        error: "ROOM_NOT_FOUND"
-      });
-    }
-
-    if (room.players.size >= 2) {
-      return reply(callback, {
-        ok: false,
-        error: "ROOM_FULL"
-      });
-    }
-
-    leaveCurrentRoom(socket, true);
-
-    const player = makePlayer(socket, roomId);
-    room.players.set(socket.id, player);
-
-    socket.join(roomId);
-    socket.data.roomId = roomId;
-
-    // IMPORTANT:
-    // Send the player list before announcing the new player.
-    socket.emit("currentPlayers", getRoomPlayers(room));
-
-    socket.emit("roomJoined", roomId);
-    socket.emit("roomInfo", {
-      roomId,
-      hostId: room.hostId,
-      started: room.started
-    });
-
-    socket.to(roomId).emit("newPlayer", serializePlayer(player));
-    sendRoomState(room);
-
-    reply(callback, {
-      ok: true,
-      roomId,
-      hostId: room.hostId
-    });
-
-    console.log(`PLAYER JOINED: ${socket.id} -> ${roomId}`);
-  });
-
-  // -------------------------
-  // SET PLAYER INFO
-  // Optional for future lobby:
-  // name + color
-  // -------------------------
-  socket.on("setPlayerInfo", (data, callback) => {
-    const room = getPlayerRoom(socket);
-    const player = room?.players.get(socket.id);
-
-    if (!player || !data) {
-      return reply(callback, { ok: false, error: "NOT_IN_ROOM" });
-    }
-
-    if (typeof data.name === "string") {
-      const name = data.name.trim().slice(0, 20);
-      if (name) player.name = name;
-    }
-
-    if (typeof data.color === "string") {
-      player.color = data.color.slice(0, 32);
-    }
-
-    io.to(room.hostId).emit("playerInfoChanged", serializePlayer(player));
-    socket.to(player.roomId).emit("playerInfoChanged", serializePlayer(player));
-
-    reply(callback, {
-      ok: true,
-      player: serializePlayer(player)
-    });
-  });
-
-  // -------------------------
-  // START GAME
-  // -------------------------
-  socket.on("startGame", (callback) => {
-    const room = getPlayerRoom(socket);
-    if (!room) {
-      return reply(callback, {
-        ok: false,
-        error: "NOT_IN_ROOM"
-      });
-    }
-
-    if (room.hostId !== socket.id) {
-      return reply(callback, {
-        ok: false,
-        error: "NOT_HOST"
-      });
-    }
-
-    room.started = true;
-
-    io.to(socket.data.roomId).emit("gameStarted", {
-      roomId: socket.data.roomId,
-      players: getRoomPlayers(room),
-      startedAt: Date.now()
-    });
-
-    reply(callback, { ok: true });
-  });
-
-  // -------------------------
-  // PLAYER MOVE
-  // -------------------------
-  socket.on("playerMove", (data) => {
-    const room = getPlayerRoom(socket);
-    const player = room?.players.get(socket.id);
-
-    if (!player || !data) return;
-
-    const x = Number(data.x);
-    const y = Number(data.y);
-    const z = Number(data.z);
-    const rotY = Number(data.rotY);
-
-    if (
-      Number.isFinite(x) &&
-      Number.isFinite(y) &&
-      Number.isFinite(z) &&
-      Number.isFinite(rotY)
-    ) {
-      // Basic server-side sanity limits.
-      player.x = clamp(x, -500, 500);
-      player.y = clamp(y, 0, 100);
-      player.z = clamp(z, -500, 500);
-      player.rotY = clampAngle(rotY);
-
-      socket.to(player.roomId).emit("playerMoved", {
-        id: socket.id,
-        x: player.x,
-        y: player.y,
-        z: player.z,
-        rotY: player.rotY
-      });
-    }
-  });
-
-  // -------------------------
-  // PLAYER SHOOT
-  // -------------------------
-  socket.on("playerShoot", (data) => {
-    const room = getPlayerRoom(socket);
-    const player = room?.players.get(socket.id);
-
-    if (!player || !data || !player.alive) return;
-
-    const dirX = Number(data.dirX);
-    const dirZ = Number(data.dirZ);
-
-    if (!Number.isFinite(dirX) || !Number.isFinite(dirZ)) return;
-
-    // Broadcast the firing effect to everybody else.
-    socket.to(player.roomId).emit("playerShot", {
-      id: socket.id,
-      x: player.x,
-      y: player.y + 1.5,
-      z: player.z,
-      dirX,
-      dirZ
-    });
-  });
-
-  // -------------------------
-  // DAMAGE PLAYER
-  // -------------------------
-  socket.on("damagePlayer", (data, callback) => {
-    const room = getPlayerRoom(socket);
-
-    if (!room || !data) {
-      return reply(callback, { ok: false, error: "NOT_IN_ROOM" });
-    }
-
-    const targetId = String(data.targetId || "");
-    const target = room.players.get(targetId);
-
-    if (!target || !target.alive) {
-      return reply(callback, { ok: false, error: "TARGET_NOT_FOUND" });
-    }
-
-    // Never trust arbitrary damage values from the browser.
-    const requestedDamage = Number(data.damage);
-    const damage = clamp(
-      Number.isFinite(requestedDamage) ? requestedDamage : 25,
-      1,
-      100
-    );
-
-    target.health = Math.max(0, target.health - damage);
-
-    io.to(targetId).emit("playerDamaged", {
-      attackerId: socket.id,
-      targetId,
-      damage,
-      health: target.health,
-      maxHealth: target.maxHealth
-    });
-
-    io.to(room.hostId).emit("playerHealthChanged", {
-      id: targetId,
-      health: target.health,
-      maxHealth: target.maxHealth
-    });
-
-    if (target.health <= 0) {
-      target.alive = false;
-
-      io.to(room.hostId).emit("playerKilled", {
-        attackerId: socket.id,
-        targetId
-      });
-
-      io.to(roomIdOf(target)).emit("playerDied", {
-        id: targetId
-      });
-    }
-
-    reply(callback, {
-      ok: true,
-      targetId,
-      health: target.health
-    });
-  });
-
-  // -------------------------
-  // RESPAWN
-  // -------------------------
-  socket.on("respawnPlayer", (callback) => {
-    const room = getPlayerRoom(socket);
-    const player = room?.players.get(socket.id);
-
-    if (!player) {
-      return reply(callback, { ok: false, error: "NOT_IN_ROOM" });
-    }
-
-    player.health = player.maxHealth;
-    player.alive = true;
-    player.x = 0;
-    player.y = 0;
-    player.z = 0;
-    player.rotY = 0;
-
-    socket.emit("playerRespawned", serializePlayer(player));
-    socket.to(player.roomId).emit("playerRespawned", serializePlayer(player));
-
-    reply(callback, {
-      ok: true,
-      player: serializePlayer(player)
-    });
-  });
-
-  // -------------------------
-  // LEAVE ROOM
-  // -------------------------
-  socket.on("leaveRoom", () => {
-    leaveCurrentRoom(socket, true);
-  });
-
-  // -------------------------
-  // DISCONNECT
-  // -------------------------
-  socket.on("disconnect", (reason) => {
-    console.log("DISCONNECTED:", socket.id, reason);
-    leaveCurrentRoom(socket, true);
-  });
+const httpServer=http.createServer((req,res)=>{
+  if(req.url==='/health' || req.url==='/'){
+    res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});
+    return res.end(JSON.stringify({ok:true,service:'tactical-rts-online',rooms:rooms.size,clients:clients.size,protocolVersion:PROTOCOL_VERSION,time:now()}));
+  }
+  res.writeHead(404);res.end('Not found');
 });
 
-function roomIdOf(player) {
-  return player.roomId;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function clampAngle(value) {
-  // Keep rotation bounded to avoid huge values.
-  return ((value + Math.PI) % (Math.PI * 2)) - Math.PI;
-}
-
-function reply(callback, data) {
-  if (typeof callback === "function") {
-    callback(data);
-  }
-}
-
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`TANK COMMAND SERVER running on port ${PORT}`);
+const wss=new WebSocket.Server({server:httpServer,maxPayload:MAX_PAYLOAD,perMessageDeflate:true});
+wss.on('connection',(ws,req)=>{
+  const c={id:id('player'),ws,room:null,slot:0,name:'لاعب',color:'#168cff',ready:false,resumeToken:token(),connectedAt:now()};
+  clients.set(c.id,c);
+  send(c,{type:'connected',protocolVersion:PROTOCOL_VERSION});
+  send(c,{type:'hello',clientId:c.id,resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
+  ws.on('message',(data,isBinary)=>{if(isBinary)return;try{const m=JSON.parse(data.toString());handle(c,m);}catch{send(c,{type:'room_error',message:'بيانات غير صالحة'});}});
+  ws.on('close',()=>{
+    clients.delete(c.id);
+    const room=c.room;if(!room)return;
+    // Keep the slot alive briefly so a mobile browser can reconnect without losing the match.
+    c.ws=null;
+    if(room.started){
+      const timer=setTimeout(()=>{if(c.room===room){leaveRoom(c,true);}},DISCONNECT_GRACE_MS);
+      c.disconnectTimer=timer;room.disconnectTimers.set(c.id,timer);
+    } else leaveRoom(c,true);
+  });
+  ws.on('error',()=>{});
 });
+
+setInterval(()=>{
+  const t=now();
+  for(const [rid,room] of rooms){
+    if(room.players.size===0 || (!room.started && t-room.createdAt>ROOM_TTL_MS)) rooms.delete(rid);
+  }
+},60000).unref();
+
+httpServer.listen(PORT,()=>console.log(`Tactical RTS server listening on ${PORT}`));
