@@ -1,223 +1,511 @@
-
+const express = require("express");
 const http = require("http");
-const crypto = require("crypto");
-const WebSocket = require("ws");
+const { Server } = require("socket.io");
 
-const PORT = process.env.PORT || 10000;
-const TICK = 50;
-const MAP_LIMIT = 145;
-const PLAYER_MAX_HP = 100;
-const SHOT_DAMAGE = 25;
-const SHOT_RANGE = 75;
-const SHOT_COOLDOWN = 220;
+const PORT = process.env.PORT || 3000;
 
+const app = express();
+const httpServer = http.createServer(app);
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  },
+  transports: ["websocket", "polling"]
+});
+
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    game: "TANK COMMAND",
+    status: "online",
+    rooms: rooms.size,
+    players: io.engine.clientsCount
+  });
+});
+
+// rooms:
+// roomId -> {
+//   hostId: string,
+//   started: boolean,
+//   createdAt: number,
+//   players: Map<socketId, player>
+// }
 const rooms = new Map();
 
-function id() {
-  return crypto.randomBytes(8).toString("hex");
+function cleanRoomId(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "")
+    .slice(0, 24);
 }
 
-function cleanName(v) {
-  return String(v || "Player").replace(/[^\w\u0600-\u06FF ._-]/g, "").slice(0, 18) || "Player";
+function makePlayer(socket, roomId) {
+  return {
+    id: socket.id,
+    roomId,
+
+    // World state
+    x: 0,
+    y: 0,
+    z: 0,
+    rotY: 0,
+
+    // Gameplay state
+    health: 100,
+    maxHealth: 100,
+    alive: true,
+
+    // Optional lobby data
+    name: `Player ${socket.id.slice(-4)}`,
+    color: null
+  };
 }
 
-function roomState(room) {
-  return [...room.players.values()].map(p => ({
-    id: p.id, name: p.name, x: p.x, y: p.y, z: p.z,
-    yaw: p.yaw, pitch: p.pitch, hp: p.hp, maxHp: PLAYER_MAX_HP,
-    alive: p.alive, color: p.color
-  }));
+function serializePlayer(player) {
+  return {
+    id: player.id,
+    x: player.x,
+    y: player.y,
+    z: player.z,
+    rotY: player.rotY,
+    health: player.health,
+    maxHealth: player.maxHealth,
+    alive: player.alive,
+    name: player.name,
+    color: player.color
+  };
 }
 
-function broadcast(room, packet) {
-  const data = JSON.stringify(packet);
-  for (const p of room.players.values()) {
-    if (p.ws.readyState === WebSocket.OPEN) p.ws.send(data);
+function getRoom(roomId) {
+  return rooms.get(roomId);
+}
+
+function getPlayerRoom(socket) {
+  const roomId = socket.data.roomId;
+  return roomId ? rooms.get(roomId) : null;
+}
+
+function leaveCurrentRoom(socket, notify = true) {
+  const roomId = socket.data.roomId;
+  if (!roomId) return;
+
+  const room = rooms.get(roomId);
+  socket.data.roomId = null;
+
+  if (!room) return;
+
+  room.players.delete(socket.id);
+
+  if (notify) {
+    socket.to(roomId).emit("playerDisconnected", socket.id);
+  }
+
+  // Pick a new host if the old host left.
+  if (room.hostId === socket.id) {
+    const nextPlayer = room.players.values().next().value;
+    room.hostId = nextPlayer ? nextPlayer.id : null;
+
+    if (room.hostId) {
+      io.to(roomId).emit("roomHostChanged", {
+        hostId: room.hostId
+      });
+    }
+  }
+
+  if (room.players.size === 0) {
+    rooms.delete(roomId);
+  } else {
+    io.to(roomId).emit("roomPlayers", getRoomPlayers(room));
   }
 }
 
-function createRoom() {
-  const code = crypto.randomBytes(3).toString("hex").toUpperCase();
-  const room = { code, players: new Map(), started: false };
-  rooms.set(code, room);
+function getRoomPlayers(room) {
+  const result = {};
+  for (const [id, player] of room.players) {
+    result[id] = serializePlayer(player);
+  }
+  return result;
+}
+
+function sendRoomState(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  io.to(roomId).emit("roomPlayers", getRoomPlayers(room));
+}
+
+function createOrResetRoom(roomId, socket) {
+  let room = rooms.get(roomId);
+
+  if (!room) {
+    room = {
+      hostId: socket.id,
+      started: false,
+      createdAt: Date.now(),
+      players: new Map()
+    };
+    rooms.set(roomId, room);
+  }
+
   return room;
 }
 
-function getOrCreateRoom(code) {
-  return rooms.get(code) || null;
-}
+io.on("connection", (socket) => {
+  console.log("CONNECTED:", socket.id);
 
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.z - b.z);
-}
+  socket.emit("serverReady", {
+    id: socket.id,
+    time: Date.now()
+  });
 
-function validNumber(n, fallback = 0) {
-  return Number.isFinite(Number(n)) ? Number(n) : fallback;
-}
+  // -------------------------
+  // CREATE ROOM
+  // -------------------------
+  socket.on("createRoom", (rawRoomId, callback) => {
+    const roomId = cleanRoomId(rawRoomId);
 
-const httpServer = http.createServer((req, res) => {
-  if (req.url === "/health") {
-    res.writeHead(200, {"content-type":"application/json"});
-    return res.end(JSON.stringify({
+    if (!roomId) {
+      return reply(callback, {
+        ok: false,
+        error: "INVALID_ROOM"
+      });
+    }
+
+    // Do not silently destroy an existing room.
+    if (rooms.has(roomId) && rooms.get(roomId).players.size > 0) {
+      return reply(callback, {
+        ok: false,
+        error: "ROOM_EXISTS"
+      });
+    }
+
+    leaveCurrentRoom(socket, true);
+
+    const room = createOrResetRoom(roomId, socket);
+    const player = makePlayer(socket, roomId);
+
+    room.players.set(socket.id, player);
+    socket.join(roomId);
+    socket.data.roomId = roomId;
+
+    socket.emit("roomJoined", roomId);
+    socket.emit("roomInfo", {
+      roomId,
+      hostId: room.hostId,
+      started: room.started
+    });
+
+    sendRoomState(room);
+
+    reply(callback, {
       ok: true,
-      service: "tank-fps-multiplayer",
-      rooms: rooms.size,
-      time: Date.now()
-    }));
-  }
-  res.writeHead(200, {"content-type":"text/plain; charset=utf-8"});
-  res.end("TANK COMMAND multiplayer server is running.");
-});
+      roomId,
+      hostId: room.hostId
+    });
 
-const wss = new WebSocket.Server({ server: httpServer, path: "/ws" });
+    console.log(`ROOM CREATED: ${roomId} by ${socket.id}`);
+  });
 
-wss.on("connection", ws => {
-  const p = {
-    ws, id: id(), name: "Player",
-    room: null, x: 0, y: 0, z: 8,
-    yaw: 0, pitch: 0, hp: PLAYER_MAX_HP,
-    alive: true, color: "#168cff",
-    lastShot: 0
-  };
+  // -------------------------
+  // JOIN ROOM
+  // -------------------------
+  socket.on("joinRoom", (rawRoomId, callback) => {
+    const roomId = cleanRoomId(rawRoomId);
+    const room = rooms.get(roomId);
 
-  function send(packet) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(packet));
-  }
-
-  send({type:"welcome", id:p.id, maxHp:PLAYER_MAX_HP});
-
-  ws.on("message", raw => {
-    let m;
-    try { m = JSON.parse(raw.toString()); } catch { return; }
-
-    if (m.type === "create_room") {
-      if (p.room) return;
-      const room = createRoom();
-      p.room = room;
-      p.name = cleanName(m.name);
-      p.color = m.color || "#168cff";
-      room.players.set(p.id, p);
-      send({type:"room_created", room:room.code, playerId:p.id});
-      broadcast(room, {type:"room_state", room:room.code, players:roomState(room), started:room.started});
-      return;
-    }
-
-    if (m.type === "join_room") {
-      if (p.room) return;
-      const room = getOrCreateRoom(String(m.room || "").toUpperCase());
-      if (!room) return send({type:"error", code:"ROOM_NOT_FOUND", message:"الغرفة غير موجودة"});
-      if (room.players.size >= 16) return send({type:"error", code:"ROOM_FULL", message:"الغرفة ممتلئة"});
-      p.room = room;
-      p.name = cleanName(m.name);
-      p.color = m.color || "#ef3d4e";
-      const spawn = room.players.size;
-      p.x = ((spawn % 4) - 1.5) * 8;
-      p.z = 8 + Math.floor(spawn / 4) * 8;
-      room.players.set(p.id, p);
-      send({type:"room_joined", room:room.code, playerId:p.id});
-      broadcast(room, {type:"room_state", room:room.code, players:roomState(room), started:room.started});
-      return;
-    }
-
-    if (m.type === "start_game") {
-      if (!p.room) return;
-      p.room.started = true;
-      for (const q of p.room.players.values()) {
-        q.hp = PLAYER_MAX_HP;
-        q.alive = true;
-      }
-      broadcast(p.room, {type:"game_started", players:roomState(p.room)});
-      return;
-    }
-
-    if (m.type === "state") {
-      if (!p.room || !p.alive) return;
-      p.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, validNumber(m.x, p.x)));
-      p.y = Math.max(0, Math.min(30, validNumber(m.y, p.y)));
-      p.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, validNumber(m.z, p.z)));
-      p.yaw = validNumber(m.yaw, p.yaw);
-      p.pitch = validNumber(m.pitch, p.pitch);
-      return;
-    }
-
-    if (m.type === "shoot") {
-      if (!p.room || !p.room.started || !p.alive) return;
-      const now = Date.now();
-      if (now - p.lastShot < SHOT_COOLDOWN) return;
-      p.lastShot = now;
-
-      const target = p.room.players.get(String(m.targetId || ""));
-      if (!target || target.id === p.id || !target.alive) return;
-
-      const d = distance(p, target);
-      if (d > SHOT_RANGE) return;
-
-      // Server-authoritative hit check. Client cannot directly set target HP.
-      const yaw = validNumber(m.yaw, p.yaw);
-      const dirX = Math.sin(yaw);
-      const dirZ = Math.cos(yaw);
-      const tx = target.x - p.x;
-      const tz = target.z - p.z;
-      const len = Math.hypot(tx, tz) || 1;
-      const dot = (tx / len) * dirX + (tz / len) * dirZ;
-      if (dot < 0.965) return;
-
-      target.hp = Math.max(0, target.hp - SHOT_DAMAGE);
-
-      broadcast(p.room, {
-        type:"shot",
-        shooterId:p.id,
-        targetId:target.id,
-        damage:SHOT_DAMAGE,
-        x:target.x, y:target.y, z:target.z
+    if (!room) {
+      return reply(callback, {
+        ok: false,
+        error: "ROOM_NOT_FOUND"
       });
-
-      if (target.hp <= 0) {
-        target.alive = false;
-        broadcast(p.room, {
-          type:"player_died",
-          victimId:target.id,
-          killerId:p.id,
-          message:"لقد خسرت"
-        });
-      }
-      broadcast(p.room, {
-        type:"room_state",
-        room:p.room.code,
-        players:roomState(p.room),
-        started:p.room.started
-      });
-      return;
     }
 
-    if (m.type === "respawn") {
-      if (!p.room) return;
-      p.hp = PLAYER_MAX_HP;
-      p.alive = true;
-      p.x = 0; p.y = 0; p.z = 8;
-      broadcast(p.room, {type:"player_respawned", player: {
-        id:p.id, x:p.x, y:p.y, z:p.z, hp:p.hp, maxHp:PLAYER_MAX_HP, alive:true
-      }});
-      return;
+    if (room.players.size >= 2) {
+      return reply(callback, {
+        ok: false,
+        error: "ROOM_FULL"
+      });
+    }
+
+    leaveCurrentRoom(socket, true);
+
+    const player = makePlayer(socket, roomId);
+    room.players.set(socket.id, player);
+
+    socket.join(roomId);
+    socket.data.roomId = roomId;
+
+    // IMPORTANT:
+    // Send the player list before announcing the new player.
+    socket.emit("currentPlayers", getRoomPlayers(room));
+
+    socket.emit("roomJoined", roomId);
+    socket.emit("roomInfo", {
+      roomId,
+      hostId: room.hostId,
+      started: room.started
+    });
+
+    socket.to(roomId).emit("newPlayer", serializePlayer(player));
+    sendRoomState(room);
+
+    reply(callback, {
+      ok: true,
+      roomId,
+      hostId: room.hostId
+    });
+
+    console.log(`PLAYER JOINED: ${socket.id} -> ${roomId}`);
+  });
+
+  // -------------------------
+  // SET PLAYER INFO
+  // Optional for future lobby:
+  // name + color
+  // -------------------------
+  socket.on("setPlayerInfo", (data, callback) => {
+    const room = getPlayerRoom(socket);
+    const player = room?.players.get(socket.id);
+
+    if (!player || !data) {
+      return reply(callback, { ok: false, error: "NOT_IN_ROOM" });
+    }
+
+    if (typeof data.name === "string") {
+      const name = data.name.trim().slice(0, 20);
+      if (name) player.name = name;
+    }
+
+    if (typeof data.color === "string") {
+      player.color = data.color.slice(0, 32);
+    }
+
+    io.to(room.hostId).emit("playerInfoChanged", serializePlayer(player));
+    socket.to(player.roomId).emit("playerInfoChanged", serializePlayer(player));
+
+    reply(callback, {
+      ok: true,
+      player: serializePlayer(player)
+    });
+  });
+
+  // -------------------------
+  // START GAME
+  // -------------------------
+  socket.on("startGame", (callback) => {
+    const room = getPlayerRoom(socket);
+    if (!room) {
+      return reply(callback, {
+        ok: false,
+        error: "NOT_IN_ROOM"
+      });
+    }
+
+    if (room.hostId !== socket.id) {
+      return reply(callback, {
+        ok: false,
+        error: "NOT_HOST"
+      });
+    }
+
+    room.started = true;
+
+    io.to(socket.data.roomId).emit("gameStarted", {
+      roomId: socket.data.roomId,
+      players: getRoomPlayers(room),
+      startedAt: Date.now()
+    });
+
+    reply(callback, { ok: true });
+  });
+
+  // -------------------------
+  // PLAYER MOVE
+  // -------------------------
+  socket.on("playerMove", (data) => {
+    const room = getPlayerRoom(socket);
+    const player = room?.players.get(socket.id);
+
+    if (!player || !data) return;
+
+    const x = Number(data.x);
+    const y = Number(data.y);
+    const z = Number(data.z);
+    const rotY = Number(data.rotY);
+
+    if (
+      Number.isFinite(x) &&
+      Number.isFinite(y) &&
+      Number.isFinite(z) &&
+      Number.isFinite(rotY)
+    ) {
+      // Basic server-side sanity limits.
+      player.x = clamp(x, -500, 500);
+      player.y = clamp(y, 0, 100);
+      player.z = clamp(z, -500, 500);
+      player.rotY = clampAngle(rotY);
+
+      socket.to(player.roomId).emit("playerMoved", {
+        id: socket.id,
+        x: player.x,
+        y: player.y,
+        z: player.z,
+        rotY: player.rotY
+      });
     }
   });
 
-  ws.on("close", () => {
-    if (!p.room) return;
-    const room = p.room;
-    room.players.delete(p.id);
-    broadcast(room, {type:"player_left", playerId:p.id, players:roomState(room)});
-    if (room.players.size === 0) rooms.delete(room.code);
+  // -------------------------
+  // PLAYER SHOOT
+  // -------------------------
+  socket.on("playerShoot", (data) => {
+    const room = getPlayerRoom(socket);
+    const player = room?.players.get(socket.id);
+
+    if (!player || !data || !player.alive) return;
+
+    const dirX = Number(data.dirX);
+    const dirZ = Number(data.dirZ);
+
+    if (!Number.isFinite(dirX) || !Number.isFinite(dirZ)) return;
+
+    // Broadcast the firing effect to everybody else.
+    socket.to(player.roomId).emit("playerShot", {
+      id: socket.id,
+      x: player.x,
+      y: player.y + 1.5,
+      z: player.z,
+      dirX,
+      dirZ
+    });
+  });
+
+  // -------------------------
+  // DAMAGE PLAYER
+  // -------------------------
+  socket.on("damagePlayer", (data, callback) => {
+    const room = getPlayerRoom(socket);
+
+    if (!room || !data) {
+      return reply(callback, { ok: false, error: "NOT_IN_ROOM" });
+    }
+
+    const targetId = String(data.targetId || "");
+    const target = room.players.get(targetId);
+
+    if (!target || !target.alive) {
+      return reply(callback, { ok: false, error: "TARGET_NOT_FOUND" });
+    }
+
+    // Never trust arbitrary damage values from the browser.
+    const requestedDamage = Number(data.damage);
+    const damage = clamp(
+      Number.isFinite(requestedDamage) ? requestedDamage : 25,
+      1,
+      100
+    );
+
+    target.health = Math.max(0, target.health - damage);
+
+    io.to(targetId).emit("playerDamaged", {
+      attackerId: socket.id,
+      targetId,
+      damage,
+      health: target.health,
+      maxHealth: target.maxHealth
+    });
+
+    io.to(room.hostId).emit("playerHealthChanged", {
+      id: targetId,
+      health: target.health,
+      maxHealth: target.maxHealth
+    });
+
+    if (target.health <= 0) {
+      target.alive = false;
+
+      io.to(room.hostId).emit("playerKilled", {
+        attackerId: socket.id,
+        targetId
+      });
+
+      io.to(roomIdOf(target)).emit("playerDied", {
+        id: targetId
+      });
+    }
+
+    reply(callback, {
+      ok: true,
+      targetId,
+      health: target.health
+    });
+  });
+
+  // -------------------------
+  // RESPAWN
+  // -------------------------
+  socket.on("respawnPlayer", (callback) => {
+    const room = getPlayerRoom(socket);
+    const player = room?.players.get(socket.id);
+
+    if (!player) {
+      return reply(callback, { ok: false, error: "NOT_IN_ROOM" });
+    }
+
+    player.health = player.maxHealth;
+    player.alive = true;
+    player.x = 0;
+    player.y = 0;
+    player.z = 0;
+    player.rotY = 0;
+
+    socket.emit("playerRespawned", serializePlayer(player));
+    socket.to(player.roomId).emit("playerRespawned", serializePlayer(player));
+
+    reply(callback, {
+      ok: true,
+      player: serializePlayer(player)
+    });
+  });
+
+  // -------------------------
+  // LEAVE ROOM
+  // -------------------------
+  socket.on("leaveRoom", () => {
+    leaveCurrentRoom(socket, true);
+  });
+
+  // -------------------------
+  // DISCONNECT
+  // -------------------------
+  socket.on("disconnect", (reason) => {
+    console.log("DISCONNECTED:", socket.id, reason);
+    leaveCurrentRoom(socket, true);
   });
 });
 
-setInterval(() => {
-  for (const room of rooms.values()) {
-    if (!room.started) continue;
-    broadcast(room, {type:"snapshot", players:roomState(room), serverTime:Date.now()});
-  }
-}, TICK);
+function roomIdOf(player) {
+  return player.roomId;
+}
 
-httpServer.listen(PORT, () => {
-  console.log(`TANK COMMAND server listening on port ${PORT}`);
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampAngle(value) {
+  // Keep rotation bounded to avoid huge values.
+  return ((value + Math.PI) % (Math.PI * 2)) - Math.PI;
+}
+
+function reply(callback, data) {
+  if (typeof callback === "function") {
+    callback(data);
+  }
+}
+
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`TANK COMMAND SERVER running on port ${PORT}`);
 });

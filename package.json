@@ -1,16 +1,14 @@
-
 {
-  "name": "tank-command-multiplayer-server",
+  "name": "tank-command-server",
   "version": "1.0.0",
   "private": true,
+  "description": "Socket.IO multiplayer server for TANK COMMAND",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.18.3"
-  },
-  "engines": {
-    "node": ">=18"
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
   }
 }
