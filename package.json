@@ -1,16 +1,16 @@
+
 {
-  "name": "tank-game-server",
+  "name": "tank-command-multiplayer-server",
   "version": "1.0.0",
   "private": true,
-  "description": "Authoritative 1v1 WebSocket room server for the Tactical Tank Game",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
