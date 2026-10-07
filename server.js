@@ -179,10 +179,9 @@ function mergeAndBroadcastState(room) {
     slot: p.slot,
     color: p.color,
     name: p.name,
-    state: (p.state && Date.now() - (p.lastStateAt || 0) <= STATE_MAX_AGE)
-      ? p.state
-      : { money: room.money, units: [], buildings: [], oil: [], base: null },
-    receivedAt: p.lastStateAt || 0
+    state: p.state || { money: room.money, units: [], buildings: [], oil: [], base: null, __seq: 0 },
+    receivedAt: p.lastStateAt || 0,
+    staleMs: p.lastStateAt ? Math.max(0, Date.now() - p.lastStateAt) : null
   }));
   const packet = { tick: Date.now(), roomId: room.id, players };
   for (const p of room.players) send(p.ws, { type: 'server_state', state: packet });
@@ -292,8 +291,9 @@ function handleMessage(ws, raw) {
     const payload = msg.payload;
     if (!payload || typeof payload !== 'object') return;
     if (payload.kind === 'authoritative_snapshot' && payload.state && typeof payload.state === 'object') {
-      self.state = payload.state;
-      self.lastStateAt = Date.now();
+      const now = Date.now();
+      self.state = { ...payload.state, __seq: Number(payload.state.__seq || 0), __serverReceivedAt: now };
+      self.lastStateAt = now;
       mergeAndBroadcastState(room);
       return;
     }
@@ -308,6 +308,14 @@ function handleMessage(ws, raw) {
     return;
   }
 }
+
+
+const STATE_BROADCAST_MS = 100;
+const stateBroadcastTimer = setInterval(() => {
+  for (const room of rooms.values()) {
+    if (room.status === 'running') mergeAndBroadcastState(room);
+  }
+}, STATE_BROADCAST_MS);
 
 function onConnection(ws) {
   ws.isAlive = true;
