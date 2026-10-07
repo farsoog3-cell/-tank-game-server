@@ -1,86 +1,35 @@
-# Tactical Tank Game — Multiplayer Server
+# Tactical Tank Game — Online Server
 
-هذا السيرفر مطابق لبروتوكول الغرف الموجود في نسخة اللعبة الحالية.
+This package is the online room server for the browser game.
 
-## الملفات
+## Architecture
 
-- `server.js` — HTTP + WebSocket + الغرف + تعريف اللاعبين + مزامنة الحالة.
-- `package.json` — اعتماد Node.js و `ws`.
-- `render.yaml` — إعداد جاهز للنشر على Render.
-- `public/index.html` — نسخة اللعبة المطابقة التي يمكن للسيرفر استضافتها مباشرة.
+- Node.js + `ws` WebSocket server.
+- Render-compatible binding on `0.0.0.0` and `PORT`.
+- 1v1 rooms only.
+- Server-generated hidden player IDs and resume tokens.
+- Player slot/color/room state are controlled by the server.
+- Match start occurs only when two real players are present and ready.
+- No bot creation or local AI opponent is used by the online flow.
+- Server sequence ordering prevents old snapshots from replacing newer state.
+- Server keeps a 90-second reconnect grace period for a running match.
+- Economy is server-clocked for captured-oil income and a client snapshot cannot mint money.
+- The server sanitizes object/state payloads before broadcasting them.
+- WebSocket ping/pong keepalive is enabled.
 
-## تشغيل محلياً
+## Important design boundary
 
-```bash
-npm install
-npm start
-```
+The original Three.js game engine remains client-side so its existing models, terrain, controls, effects, construction animation and combat presentation are preserved. The online layer synchronizes the resulting gameplay state through the server.
 
-السيرفر يستخدم `PORT` الذي توفره Render، والافتراضي محلياً `10000`، ويربط على `0.0.0.0`.
+This is intentionally **not** pretending that the entire Three.js physics/combat engine has been ported to Node. A fully server-authoritative simulation would require moving movement, collision, projectile, damage, construction and production simulation into the server as well. The current server therefore owns identity, room lifecycle, sequencing, reconnect and economy ceilings while the existing game engine remains responsible for local simulation and rendering.
 
 ## Render
 
-Build Command:
+Build command: `npm install`
 
-```text
-npm install
-```
+Start command: `npm start`
 
-Start Command:
+Health endpoint: `/health`
 
-```text
-npm start
-```
-
-Health Check:
-
-```text
-/health
-```
-
-## WebSocket
-
-رابط اللعبة الحالي:
-
-```text
-wss://tank-game-server-o650.onrender.com
-```
-
-## بروتوكول الغرف
-
-يدعم السيرفر الرسائل التي تستخدمها اللعبة الحالية:
-
-- `list_rooms`
-- `create_room`
-- `join_room`
-- `set_color`
-- `toggle_ready`
-- `game_event`
-- `leave_room`
-- `ping`
-
-ويرسل:
-
-- `hello`
-- `rooms`
-- `room_created`
-- `room_state`
-- `game_start`
-- `server_state`
-- `peer_message`
-- `match_end`
-
-## قواعد المباراة
-
-- غرفة واحدة = لاعبان فقط.
-- لكل لاعب ID عشوائي مخفي يولده السيرفر.
-- لكل لاعب لون مستقل.
-- المال الابتدائي يحدد من إعداد الغرفة ويستخدمه اللاعبان.
-- لا يوجد Bot ولا AI على السيرفر.
-- السيرفر لا ينشئ عدواً محلياً؛ اللاعب الآخر هو الخصم الحقيقي.
-- حالة اللاعب التي يرسلها العميل تُجمع في `server_state` ليشاهدها الطرف الآخر.
-
-> ملاحظة: WebSocket على Render يعمل عبر `wss://` عند الوصول عبر HTTPS، وRender يتطلب أن يستمع تطبيق الويب على `0.0.0.0` والمنفذ الذي توفره البيئة. 
-
-### Multiplayer synchronization fix
-The bundled game now uses deterministic terrain texture generation so both clients see the same terrain appearance. The online bridge also synchronizes remote units, factories, barracks, base HP, colors, and player money. Remote entities are marked as server-remote and are excluded from local AI/movement simulation.
+WebSocket URL used by the game:
+`wss://tank-game-server-o650.onrender.com`
