@@ -142,9 +142,11 @@ function sendGameStart(room, player) {
     type: 'game_start',
     roomId: room.id,
     playerId: player.slot - 1,
+    playerServerId: player.id,
     opponentId: opponent.id,
     hiddenPlayerId: player.hiddenPlayerId,
     opponentHiddenId: opponent.hiddenPlayerId,
+    protocolVersion: 2,
     seed: room.seed,
     serverTime: Date.now(),
     m: room.money,
@@ -340,6 +342,12 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server, maxPayload: MAX_PAYLOAD });
 wss.on('connection', onConnection);
+
+setInterval(() => {
+  for (const room of rooms.values()) {
+    if (room.status === 'running') mergeAndBroadcastState(room);
+  }
+}, 100);
 
 setInterval(() => {
   const now = Date.now();
