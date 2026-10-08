@@ -8,7 +8,8 @@ const PORT = Number(process.env.PORT || 10000);
 const MAX_ROOMS = 200;
 const MAX_PLAYERS = 2;
 const ROOM_TTL_MS = 30 * 60 * 1000;
-const DISCONNECT_GRACE_MS = 20 * 1000;
+const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
+const DISCONNECT_COUNTDOWN_MS = DISCONNECT_GRACE_MS;
 const SNAPSHOT_MIN_MS = 50;
 const MAX_PAYLOAD = 1024 * 1024;
 const MAP_LIMIT = 420;
@@ -211,11 +212,18 @@ function resumeRoom(c,payload) {
   const old=[...room.players.values()].find(p=>p.resumeToken===String(payload.resumeToken||''));
   if (!old) return send(c,{type:'room_error',message:'رمز الاستعادة غير صالح'});
   if (old.ws===c.ws) return;
-  if (old.disconnectTimer) clearTimeout(old.disconnectTimer);
+  if (old.disconnectTimer) {
+    clearTimeout(old.disconnectTimer);
+    old.disconnectTimer=null;
+    room.disconnectTimers.delete(old.id);
+  }
   // Transfer the player identity to the new WebSocket.
   clients.delete(old.id);
   c.id=old.id; c.name=old.name; c.color=old.color; c.slot=old.slot; c.ready=old.ready; c.resumeToken=old.resumeToken; c.room=room;
   room.players.set(c.id,c); clients.set(c.id,c);
+  if (room.started) {
+    broadcastRoom(room,{type:'opponent_reconnected',playerId:c.id});
+  }
   send(c,{type:'room_state',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
   if (room.started) {
     const opponent=[...room.players.values()].find(p=>p.id!==c.id);
@@ -247,9 +255,15 @@ const httpServer=http.createServer((req,res)=>{
   res.writeHead(404);res.end('Not found');
 });
 
+function sendToConnectedOpponent(room, disconnectedPlayer, msg) {
+  for (const p of room.players.values()) {
+    if (p.id!==disconnectedPlayer.id && p.ws && p.ws.readyState===WebSocket.OPEN) send(p,msg);
+  }
+}
+
 const wss=new WebSocket.Server({server:httpServer,maxPayload:MAX_PAYLOAD,perMessageDeflate:true});
 wss.on('connection',(ws,req)=>{
-  const c={id:id('player'),ws,room:null,slot:0,name:'لاعب',color:'#168cff',ready:false,resumeToken:token(),connectedAt:now()};
+  const c={id:id('player'),ws,room:null,slot:0,name:'لاعب',color:'#168cff',ready:false,resumeToken:token(),connectedAt:now(),disconnectedAt:0,disconnectDeadline:0,disconnectTimer:null};
   clients.set(c.id,c);
   send(c,{type:'connected',protocolVersion:PROTOCOL_VERSION});
   send(c,{type:'hello',clientId:c.id,resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
@@ -260,8 +274,29 @@ wss.on('connection',(ws,req)=>{
     // Keep the slot alive briefly so a mobile browser can reconnect without losing the match.
     c.ws=null;
     if(room.started){
-      const timer=setTimeout(()=>{if(c.room===room){leaveRoom(c,true);}},DISCONNECT_GRACE_MS);
-      c.disconnectTimer=timer;room.disconnectTimers.set(c.id,timer);
+      const disconnectedAt=now();
+      const deadline=disconnectedAt+DISCONNECT_COUNTDOWN_MS;
+      c.disconnectedAt=disconnectedAt;
+      c.disconnectDeadline=deadline;
+      sendToConnectedOpponent(room,c,{type:'opponent_disconnected',playerId:c.id,deadline,remainingMs:DISCONNECT_COUNTDOWN_MS});
+
+      const timer=setTimeout(()=>{
+        if(c.room!==room || c.ws) return;
+        const opponent=[...room.players.values()].find(p=>p.id!==c.id);
+        if(!opponent) return;
+        room.disconnectTimers.delete(c.id);
+        c.disconnectTimer=null;
+        broadcastRoom(room,{type:'match_end',result:{winnerId:opponent.id,loserId:c.id,reason:'disconnect_timeout',timeoutMs:DISCONNECT_COUNTDOWN_MS}});
+        room.started=false;
+        room.startAt=0;
+        room.snapshots.clear();
+        for(const p of room.players.values()) p.ready=false;
+        c.disconnectedAt=0;
+        c.disconnectDeadline=0;
+        broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
+      },DISCONNECT_COUNTDOWN_MS);
+      c.disconnectTimer=timer;
+      room.disconnectTimers.set(c.id,timer);
     } else leaveRoom(c,true);
   });
   ws.on('error',()=>{});
