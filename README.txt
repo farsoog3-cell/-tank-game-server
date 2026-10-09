@@ -1,10 +1,10 @@
-إصلاح تزامن المباني والمشاة
+RTS Online - 5 Minute Disconnect System
 
-تم إصلاح:
-1) المصنع والثكنة يتم تزامنهما فور الإنشاء مع موقعهما ومرحلة البناء.
-2) تحديث تقدم البناء وHP والإنتاج للمباني الموجودة، بدلاً من تسجيل المبنى مرة واحدة فقط.
-3) إزالة الخصم الخاطئ من السيرفر عند تسجيل المصنع/الثكنة (كان 1500/700 بينما اللعبة تخصم 400/150).
-4) المشاة يدخلون ضمن لقطة الوحدات بشكل صريح حتى يظهر الجندي عند اللاعب الآخر.
-5) تم فحص JavaScript syntax للملف.
+server.js = Node.js WebSocket server with 5-minute disconnect grace period.
+index.html = current game file with the terrain/player waiting screen.
 
-ضع index.html مع server.js في مشروع السيرفر الحالي. لا تغيّر ملف terrain الخارجي.
+Run server:
+npm install ws
+node server.js
+
+The server is authoritative for the 5-minute timeout.
