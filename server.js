@@ -8,8 +8,7 @@ const PORT = Number(process.env.PORT || 10000);
 const MAX_ROOMS = 200;
 const MAX_PLAYERS = 2;
 const ROOM_TTL_MS = 30 * 60 * 1000;
-const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
-const DISCONNECT_COUNTDOWN_MS = DISCONNECT_GRACE_MS;
+const DISCONNECT_GRACE_MS = 20 * 1000;
 const SNAPSHOT_MIN_MS = 50;
 const MAX_PAYLOAD = 1024 * 1024;
 const MAP_LIMIT = 420;
@@ -170,19 +169,16 @@ function sanitizeUnit(u, index) {
     guard:u.guard&&typeof u.guard==='object'?{x:clamp(finite(u.guard.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(u.guard.z),-MAP_LIMIT,MAP_LIMIT)}:null
   };
 }
-function sanitizeBuilding(b, ownerSlot) {
+function sanitizeBuilding(b) {
   if (!b || typeof b!=='object' || !b.id) return null;
-  const type=String(b.type||'building').slice(0,24);
-  // Only the supported player-buildable structures are accepted in online snapshots.
-  if (!['factory','barracks'].includes(type)) return null;
-  const out={id:String(b.id).slice(0,80),type,x:clamp(finite(b.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(b.z),-MAP_LIMIT,MAP_LIMIT),y:clamp(finite(b.y),-100,100),rot:finite(b.rot),hp:clamp(finite(b.hp,1000),0,100000),maxHp:clamp(finite(b.maxHp,1000),1,100000),done:b.done!==false,destroyed:!!b.destroyed,owner:'player',ownerSlot,progress:clamp(finite(b.progress,b.done===false?0:1),0,1)};
+  const out={id:String(b.id).slice(0,80),type:String(b.type||'building').slice(0,24),x:clamp(finite(b.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(b.z),-MAP_LIMIT,MAP_LIMIT),y:clamp(finite(b.y),-100,100),rot:finite(b.rot),hp:clamp(finite(b.hp,1000),0,100000),maxHp:clamp(finite(b.maxHp,1000),1,100000),done:b.done!==false,destroyed:!!b.destroyed,owner:'player',progress:clamp(finite(b.progress,b.done===false?0:1),0,1)};
   if (b.production && typeof b.production==='object') out.production={type:String(b.production.type||'unknown').slice(0,30),elapsed:clamp(finite(b.production.elapsed),0,3600000),duration:clamp(finite(b.production.duration,1),1,3600000)};
   return out;
 }
 function sanitizeState(state) {
   if (!state || typeof state!=='object') return null;
   const units=Array.isArray(state.units)?state.units.slice(0,150).map(sanitizeUnit).filter(Boolean):[];
-  const buildings=Array.isArray(state.buildings)?state.buildings.slice(0,80).map(b=>sanitizeBuilding(b,0)).filter(Boolean):[];
+  const buildings=Array.isArray(state.buildings)?state.buildings.slice(0,80).map(sanitizeBuilding).filter(Boolean):[];
   const oil=Array.isArray(state.oil)?state.oil.slice(0,16).map(r=>({id:String(r.id||'').slice(0,80),x:clamp(finite(r.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(r.z),-MAP_LIMIT,MAP_LIMIT),hp:clamp(finite(r.hp,700),0,100000),maxHp:clamp(finite(r.maxHp,700),1,100000),owner:['player','enemy','none'].includes(r.owner)?r.owner:'none',captureProgress:clamp(finite(r.captureProgress),0,1)})):[];
   return {money:clamp(Math.floor(finite(state.money)),0,100000000),units,buildings,oil,base:state.base?{hp:clamp(finite(state.base.hp,1600),0,1000000),maxHp:clamp(finite(state.base.maxHp,1600),1,1000000)}:null,__seq:Math.max(0,Math.floor(finite(state.__seq))),__clientTime:finite(state.__clientTime)};
 }
@@ -195,10 +191,6 @@ function receiveGameEvent(c,payload) {
     if (nowMs-rec.receivedAt<SNAPSHOT_MIN_MS) return;
     const state=sanitizeState(payload.state); if (!state) return;
     if (state.__seq<rec.seq) return;
-    // The server stamps building ownership from the authenticated room slot; it never
-    // trusts a client-supplied owner/slot value. This keeps each player's structures distinct.
-    state.playerSlot=c.slot;
-    state.buildings=state.buildings.map(b=>({...b,owner:'player',ownerSlot:c.slot}));
     rec.seq=state.__seq; rec.state=state; rec.receivedAt=nowMs; room.snapshots.set(c.id,rec); room.lastActivity=nowMs;
     const packet={tick:Math.floor((nowMs-room.startAt)/50),serverTime:nowMs,players:[]};
     for (const p of room.players.values()) {
@@ -219,18 +211,11 @@ function resumeRoom(c,payload) {
   const old=[...room.players.values()].find(p=>p.resumeToken===String(payload.resumeToken||''));
   if (!old) return send(c,{type:'room_error',message:'رمز الاستعادة غير صالح'});
   if (old.ws===c.ws) return;
-  if (old.disconnectTimer) {
-    clearTimeout(old.disconnectTimer);
-    old.disconnectTimer=null;
-    room.disconnectTimers.delete(old.id);
-  }
+  if (old.disconnectTimer) clearTimeout(old.disconnectTimer);
   // Transfer the player identity to the new WebSocket.
   clients.delete(old.id);
   c.id=old.id; c.name=old.name; c.color=old.color; c.slot=old.slot; c.ready=old.ready; c.resumeToken=old.resumeToken; c.room=room;
   room.players.set(c.id,c); clients.set(c.id,c);
-  if (room.started) {
-    broadcastRoom(room,{type:'opponent_reconnected',playerId:c.id});
-  }
   send(c,{type:'room_state',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
   if (room.started) {
     const opponent=[...room.players.values()].find(p=>p.id!==c.id);
@@ -262,15 +247,9 @@ const httpServer=http.createServer((req,res)=>{
   res.writeHead(404);res.end('Not found');
 });
 
-function sendToConnectedOpponent(room, disconnectedPlayer, msg) {
-  for (const p of room.players.values()) {
-    if (p.id!==disconnectedPlayer.id && p.ws && p.ws.readyState===WebSocket.OPEN) send(p,msg);
-  }
-}
-
 const wss=new WebSocket.Server({server:httpServer,maxPayload:MAX_PAYLOAD,perMessageDeflate:true});
 wss.on('connection',(ws,req)=>{
-  const c={id:id('player'),ws,room:null,slot:0,name:'لاعب',color:'#168cff',ready:false,resumeToken:token(),connectedAt:now(),disconnectedAt:0,disconnectDeadline:0,disconnectTimer:null};
+  const c={id:id('player'),ws,room:null,slot:0,name:'لاعب',color:'#168cff',ready:false,resumeToken:token(),connectedAt:now()};
   clients.set(c.id,c);
   send(c,{type:'connected',protocolVersion:PROTOCOL_VERSION});
   send(c,{type:'hello',clientId:c.id,resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
@@ -281,29 +260,8 @@ wss.on('connection',(ws,req)=>{
     // Keep the slot alive briefly so a mobile browser can reconnect without losing the match.
     c.ws=null;
     if(room.started){
-      const disconnectedAt=now();
-      const deadline=disconnectedAt+DISCONNECT_COUNTDOWN_MS;
-      c.disconnectedAt=disconnectedAt;
-      c.disconnectDeadline=deadline;
-      sendToConnectedOpponent(room,c,{type:'opponent_disconnected',playerId:c.id,deadline,remainingMs:DISCONNECT_COUNTDOWN_MS});
-
-      const timer=setTimeout(()=>{
-        if(c.room!==room || c.ws) return;
-        const opponent=[...room.players.values()].find(p=>p.id!==c.id);
-        if(!opponent) return;
-        room.disconnectTimers.delete(c.id);
-        c.disconnectTimer=null;
-        broadcastRoom(room,{type:'match_end',result:{winnerId:opponent.id,loserId:c.id,reason:'disconnect_timeout',timeoutMs:DISCONNECT_COUNTDOWN_MS}});
-        room.started=false;
-        room.startAt=0;
-        room.snapshots.clear();
-        for(const p of room.players.values()) p.ready=false;
-        c.disconnectedAt=0;
-        c.disconnectDeadline=0;
-        broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
-      },DISCONNECT_COUNTDOWN_MS);
-      c.disconnectTimer=timer;
-      room.disconnectTimers.set(c.id,timer);
+      const timer=setTimeout(()=>{if(c.room===room){leaveRoom(c,true);}},DISCONNECT_GRACE_MS);
+      c.disconnectTimer=timer;room.disconnectTimers.set(c.id,timer);
     } else leaveRoom(c,true);
   });
   ws.on('error',()=>{});
