@@ -170,16 +170,19 @@ function sanitizeUnit(u, index) {
     guard:u.guard&&typeof u.guard==='object'?{x:clamp(finite(u.guard.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(u.guard.z),-MAP_LIMIT,MAP_LIMIT)}:null
   };
 }
-function sanitizeBuilding(b) {
+function sanitizeBuilding(b, ownerSlot) {
   if (!b || typeof b!=='object' || !b.id) return null;
-  const out={id:String(b.id).slice(0,80),type:String(b.type||'building').slice(0,24),x:clamp(finite(b.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(b.z),-MAP_LIMIT,MAP_LIMIT),y:clamp(finite(b.y),-100,100),rot:finite(b.rot),hp:clamp(finite(b.hp,1000),0,100000),maxHp:clamp(finite(b.maxHp,1000),1,100000),done:b.done!==false,destroyed:!!b.destroyed,owner:'player',progress:clamp(finite(b.progress,b.done===false?0:1),0,1)};
+  const type=String(b.type||'building').slice(0,24);
+  // Only the supported player-buildable structures are accepted in online snapshots.
+  if (!['factory','barracks'].includes(type)) return null;
+  const out={id:String(b.id).slice(0,80),type,x:clamp(finite(b.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(b.z),-MAP_LIMIT,MAP_LIMIT),y:clamp(finite(b.y),-100,100),rot:finite(b.rot),hp:clamp(finite(b.hp,1000),0,100000),maxHp:clamp(finite(b.maxHp,1000),1,100000),done:b.done!==false,destroyed:!!b.destroyed,owner:'player',ownerSlot,progress:clamp(finite(b.progress,b.done===false?0:1),0,1)};
   if (b.production && typeof b.production==='object') out.production={type:String(b.production.type||'unknown').slice(0,30),elapsed:clamp(finite(b.production.elapsed),0,3600000),duration:clamp(finite(b.production.duration,1),1,3600000)};
   return out;
 }
 function sanitizeState(state) {
   if (!state || typeof state!=='object') return null;
   const units=Array.isArray(state.units)?state.units.slice(0,150).map(sanitizeUnit).filter(Boolean):[];
-  const buildings=Array.isArray(state.buildings)?state.buildings.slice(0,80).map(sanitizeBuilding).filter(Boolean):[];
+  const buildings=Array.isArray(state.buildings)?state.buildings.slice(0,80).map(b=>sanitizeBuilding(b,0)).filter(Boolean):[];
   const oil=Array.isArray(state.oil)?state.oil.slice(0,16).map(r=>({id:String(r.id||'').slice(0,80),x:clamp(finite(r.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(r.z),-MAP_LIMIT,MAP_LIMIT),hp:clamp(finite(r.hp,700),0,100000),maxHp:clamp(finite(r.maxHp,700),1,100000),owner:['player','enemy','none'].includes(r.owner)?r.owner:'none',captureProgress:clamp(finite(r.captureProgress),0,1)})):[];
   return {money:clamp(Math.floor(finite(state.money)),0,100000000),units,buildings,oil,base:state.base?{hp:clamp(finite(state.base.hp,1600),0,1000000),maxHp:clamp(finite(state.base.maxHp,1600),1,1000000)}:null,__seq:Math.max(0,Math.floor(finite(state.__seq))),__clientTime:finite(state.__clientTime)};
 }
@@ -192,6 +195,10 @@ function receiveGameEvent(c,payload) {
     if (nowMs-rec.receivedAt<SNAPSHOT_MIN_MS) return;
     const state=sanitizeState(payload.state); if (!state) return;
     if (state.__seq<rec.seq) return;
+    // The server stamps building ownership from the authenticated room slot; it never
+    // trusts a client-supplied owner/slot value. This keeps each player's structures distinct.
+    state.playerSlot=c.slot;
+    state.buildings=state.buildings.map(b=>({...b,owner:'player',ownerSlot:c.slot}));
     rec.seq=state.__seq; rec.state=state; rec.receivedAt=nowMs; room.snapshots.set(c.id,rec); room.lastActivity=nowMs;
     const packet={tick:Math.floor((nowMs-room.startAt)/50),serverTime:nowMs,players:[]};
     for (const p of room.players.values()) {
