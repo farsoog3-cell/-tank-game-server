@@ -1,16 +1,10 @@
 {
-  "name": "tactical-rts-online-server",
-  "version": "1.0.0",
+  "name": "control-battle-realtime-server",
+  "version": "2.0.0",
   "private": true,
-  "description": "WebSocket server for the Tactical RTS browser game",
+  "description": "Raw WebSocket multiplayer synchronization and offline construction/production progression for CONTROL BATTLE",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "ws": "^8.18.0"
-  }
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "ws": "^8.18.0" }
 }

@@ -1,319 +1,158 @@
 'use strict';
-
+// CONTROL BATTLE WebSocket match server. Compatible with the game's raw WebSocket protocol.
+// The server aggregates snapshots from both players and continues construction/production
+// for a disconnected player so the opponent's view does not freeze at the last frame.
 const http = require('http');
 const crypto = require('crypto');
 const WebSocket = require('ws');
-
 const PORT = Number(process.env.PORT || 10000);
-const MAX_ROOMS = 200;
-const MAX_PLAYERS = 2;
+const TICK_MS = 100;
+const DISCONNECT_GRACE_MS = 10 * 60 * 1000;
 const ROOM_TTL_MS = 30 * 60 * 1000;
-const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
-const DISCONNECT_COUNTDOWN_MS = DISCONNECT_GRACE_MS;
-const SNAPSHOT_MIN_MS = 50;
-const MAX_PAYLOAD = 1024 * 1024;
-const MAP_LIMIT = 420;
-const PROTOCOL_VERSION = 4;
-
 const rooms = new Map();
 const clients = new Map();
-
-const COLORS = new Set([
-  '#168cff','#ef4444','#22c55e','#f59e0b','#a855f7','#06b6d4','#f97316','#e11d48'
-]);
-
-function id(prefix='id') {
-  return prefix + '_' + crypto.randomBytes(9).toString('base64url');
+const uid = p => `${p||''}${crypto.randomBytes(6).toString('hex')}`;
+const now = () => Date.now();
+const cleanName = (v, f='لاعب') => String(v ?? f).replace(/[<>]/g,'').trim().slice(0,28) || f;
+const cleanColor = (v, f='#168cff') => /^#[0-9a-f]{6}$/i.test(String(v||'')) ? String(v) : f;
+const num = (v, f=0) => Number.isFinite(Number(v)) ? Number(v) : f;
+function send(ws, obj){ if(ws && ws.readyState===WebSocket.OPEN) try{ws.send(JSON.stringify(obj));}catch(_){} }
+function roomOf(client){return client?.roomId ? rooms.get(client.roomId) : null;}
+function publicRoom(r){return {id:r.id,name:r.name,money:r.money,players:r.players.length,maxPlayers:2,started:r.started};}
+function publicState(r){return {id:r.id,name:r.name,money:r.money,hostId:r.hostId,started:r.started,players:r.players.map(p=>({id:p.id,name:p.name,color:p.color,ready:p.ready,connected:!!p.ws}))};}
+function broadcastRoom(r,msg){for(const p of r.players)send(p.ws,msg);}
+function roomList(ws){send(ws,{type:'rooms',rooms:[...rooms.values()].filter(r=>!r.started&&r.players.some(p=>p.ws)).map(publicRoom)});}
+function emitState(r){
+  if(!r.started)return;
+  const packet={tick:r.tick,serverTime:now(),players:r.players.map(p=>({id:p.id,color:p.color,name:p.name,connected:!!p.ws,state:p.state||{money:r.money,units:[],buildings:[],oil:[],base:null}}))};
+  broadcastRoom(r,{type:'server_state',state:packet});
 }
-function token() { return crypto.randomBytes(24).toString('base64url'); }
-function now() { return Date.now(); }
-function safeName(v) {
-  const s = String(v ?? '').replace(/[<>\u0000-\u001f]/g, '').trim();
-  return s.slice(0, 32) || 'لاعب';
+function makeStart(r,p,resumed=false){
+  const i=r.players.indexOf(p),opp=r.players[1-i];
+  send(p.ws,{type:'game_start',roomId:r.id,room:publicState(r),playerId:i,playerSlot:i+1,playerServerId:p.id,opponentServerId:opp?.id||null,seed:r.seed,serverTime:r.startedAt,resumeToken:p.resumeToken,resumed,config:{money:r.money,player:{id:p.id,color:p.color,colorName:p.name},opponent:{id:opp?.id,color:opp?.color||'#ef4444',colorName:opp?.name||'OPPONENT'},playerColor:p.color,playerColorName:p.name,enemyColor:opp?.color||'#ef4444',enemyColorName:opp?.name||'OPPONENT'}});
 }
-function safeColor(v) {
-  const s = String(v || '').toLowerCase();
-  return /^#[0-9a-f]{6}$/.test(s) && COLORS.has(s) ? s : '#168cff';
+function startIfReady(r){
+  if(r.started||r.players.length!==2||!r.players.every(p=>p.ready&&p.ws))return;
+  r.started=true;r.seed=crypto.randomBytes(4).readUInt32BE(0);r.startedAt=now();r.lastActivity=now();r.tick=0;
+  for(const p of r.players)makeStart(r,p,false);
+  emitState(r);
 }
-function safeMoney(v) {
-  const n = Number(v);
-  return [1000, 2000, 3000, 5000, 10000].includes(n) ? n : 1000;
-}
-function clamp(n,a,b) { return Math.max(a, Math.min(b,n)); }
-function finite(v,f=0) { return Number.isFinite(Number(v)) ? Number(v) : f; }
-function send(c, msg) {
-  if (!c || c.ws.readyState !== WebSocket.OPEN) return false;
-  try { c.ws.send(JSON.stringify(msg)); return true; } catch { return false; }
-}
-function broadcastRoom(room, msg) {
-  for (const p of room.players.values()) send(p, msg);
-}
-function publicPlayer(p) {
-  return { id:p.id, name:p.name, color:p.color, ready:!!p.ready };
-}
-function publicRoom(room) {
-  return {
-    id: room.id,
-    name: room.name,
-    players: room.players.size,
-    maxPlayers: MAX_PLAYERS,
-    money: room.money,
-    started: room.started,
-    createdAt: room.createdAt,
-    public: true
-  };
-}
-function lobbyRoom(room) {
-  return {
-    ...publicRoom(room),
-    players: [...room.players.values()].map(publicPlayer)
-  };
-}
-function listRooms() {
-  return [...rooms.values()]
-    .filter(r => !r.started && r.players.size < MAX_PLAYERS && now()-r.createdAt < ROOM_TTL_MS)
-    .map(publicRoom);
-}
-
-function createRoom(c, payload) {
-  if (c.room) return send(c,{type:'room_error',message:'أنت داخل غرفة بالفعل'});
-  if (rooms.size >= MAX_ROOMS) return send(c,{type:'room_error',message:'السيرفر ممتلئ حاليًا'});
-  const room = {
-    id:id('room'), name:safeName(payload.name || 'غرفة جماعية'), money:safeMoney(payload.money),
-    createdAt:now(), lastActivity:now(), started:false, startAt:0, seed:crypto.randomInt(1, 0x7fffffff),
-    players:new Map(), snapshots:new Map(), disconnectTimers:new Map()
-  };
-  room.players.set(c.id, c);
-  c.room=room; c.slot=1; c.ready=false; c.resumeToken=token();
-  rooms.set(room.id,room);
-  send(c,{type:'room_created',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
-  broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
-}
-
-function joinRoom(c, payload) {
-  if (c.room) return send(c,{type:'room_error',message:'أنت داخل غرفة بالفعل'});
-  const room=rooms.get(String(payload.roomId||''));
-  if (!room) return send(c,{type:'room_error',message:'الغرفة غير موجودة'});
-  if (room.started) return send(c,{type:'room_error',message:'المباراة بدأت بالفعل'});
-  if (room.players.size>=MAX_PLAYERS) return send(c,{type:'room_error',message:'الغرفة ممتلئة'});
-  room.lastActivity=now();
-  c.room=room; c.slot=2; c.ready=false; c.resumeToken=token();
-  c.name=safeName(payload.name||'لاعب'); c.color=safeColor(payload.color);
-  room.players.set(c.id,c);
-  send(c,{type:'room_joined',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
-  broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
-}
-
-function leaveRoom(c, silent=false) {
-  const room=c.room;
-  if (!room) return;
-  room.players.delete(c.id);
-  room.snapshots.delete(c.id);
-  room.lastActivity=now();
-  c.room=null; c.slot=0; c.ready=false;
-  if (room.disconnectTimers.has(c.id)) { clearTimeout(room.disconnectTimers.get(c.id)); room.disconnectTimers.delete(c.id); }
-  if (room.started) {
-    if (room.players.size===0) rooms.delete(room.id);
-    else broadcastRoom(room,{type:'match_end',result:{winnerId:[...room.players.keys()][0],reason:'opponent_left'}});
-  } else {
-    if (!silent) send(c,{type:'room_left',roomId:room.id});
-    if (room.players.size===0) rooms.delete(room.id);
-    else broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
+function detach(ws, reason='disconnect'){
+  const c=clients.get(ws);if(!c)return;
+  const r=roomOf(c);clients.delete(ws);
+  if(!r){return;}
+  const p=r.players.find(x=>x.id===c.playerId)||r.players.find(x=>x.ws===ws);
+  if(!p)return;
+  p.ws=null;p.disconnectedAt=now();r.lastActivity=now();
+  if(r.started){
+    broadcastRoom(r,{type:'peer_message',payload:{kind:'player_connection',playerId:p.id,connected:false,reason,at:now()}});
+    emitState(r);
+  }else{
+    r.players=r.players.filter(x=>x!==p);
+    if(!r.players.length)rooms.delete(r.id);else{if(r.hostId===p.id)r.hostId=r.players[0].id;broadcastRoom(r,{type:'room_state',room:publicState(r)});}
   }
 }
-
-function toggleReady(c) {
-  const room=c.room;
-  if (!room) return send(c,{type:'room_error',message:'أنت لست داخل غرفة'});
-  if (room.started) return;
-  c.ready=!c.ready; room.lastActivity=now();
-  broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
-  if (room.players.size===MAX_PLAYERS && [...room.players.values()].every(p=>p.ready)) startMatch(room);
+function createRoom(client,msg){
+  const r={id:uid('room_'),name:cleanName(msg.name,'معركة جماعية'),money:Math.max(1000,Math.min(5000,num(msg.money,1000))),hostId:client.id,players:[],started:false,seed:0,startedAt:0,tick:0,lastActivity:now()};
+  const p={id:client.id,name:cleanName(msg.namePlayer,'القائد'),color:cleanColor(msg.color),ready:false,ws:client.ws,resumeToken:uid('resume_'),state:null,disconnectedAt:null,generatedUnits:[],offlineBuilds:{},offlineProduction:{}};
+  r.players.push(p);client.roomId=r.id;client.playerId=p.id;rooms.set(r.id,r);
+  send(client.ws,{type:'room_created',room:publicState(r)});send(client.ws,{type:'hello',clientId:client.id,resumeToken:p.resumeToken});roomList(client.ws);
 }
-
-function setColor(c,payload) {
-  if (!c.room || c.room.started) return;
-  c.color=safeColor(payload.color); c.room.lastActivity=now();
-  broadcastRoom(c.room,{type:'room_state',room:lobbyRoom(c.room)});
+function joinRoom(client,msg){
+  const r=rooms.get(String(msg.roomId||''));
+  if(!r||r.started){send(client.ws,{type:'room_error',message:'الغرفة غير متاحة'});return;}
+  if(r.players.length>=2){send(client.ws,{type:'room_error',message:'الغرفة ممتلئة'});return;}
+  const p={id:client.id,name:cleanName(msg.name,'اللاعب الثاني'),color:cleanColor(msg.color,'#ef4444'),ready:false,ws:client.ws,resumeToken:uid('resume_'),state:null,disconnectedAt:null,generatedUnits:[],offlineBuilds:{},offlineProduction:{}};
+  r.players.push(p);client.roomId=r.id;client.playerId=p.id;r.lastActivity=now();
+  send(client.ws,{type:'room_joined',room:publicState(r)});send(client.ws,{type:'hello',clientId:client.id,resumeToken:p.resumeToken});broadcastRoom(r,{type:'room_state',room:publicState(r)});
 }
-
-function startMatch(room) {
-  if (room.started || room.players.size!==MAX_PLAYERS) return;
-  const players=[...room.players.values()].sort((a,b)=>a.slot-b.slot);
-  if (!players.every(p=>p.ready)) return;
-  room.started=true; room.startAt=now()+1200; room.lastActivity=now();
-  for (const p of players) {
-    p.ready=true;
-    room.snapshots.set(p.id,{seq:0,state:null,receivedAt:0});
-  }
-  for (const p of players) {
-    const opponent=players.find(x=>x.id!==p.id);
-    send(p,{
-      type:'game_start', roomId:room.id, playerSlot:p.slot,
-      playerServerId:p.id, opponentServerId:opponent.id,
-      opponentId:opponent.id, seed:room.seed, serverTime:room.startAt,
-      resumeToken:p.resumeToken, protocolVersion:PROTOCOL_VERSION,
-      config:{money:room.money,player:{id:p.id,name:p.name,color:p.color,colorName:'PLAYER'},opponent:{id:opponent.id,name:opponent.name,color:opponent.color,colorName:'OPPONENT'}}
-    });
-  }
+function resumeRoom(client,msg){
+  const token=String(msg.resumeToken||'');let r=null,p=null;
+  for(const room of rooms.values()){const found=room.players.find(x=>x.resumeToken===token&&x.id);if(found){r=room;p=found;break;}}
+  if(!r||!p||String(msg.roomId||r.id)!==r.id){send(client.ws,{type:'room_error',message:'انتهت مهلة استعادة المباراة'});return;}
+  if(p.ws&&p.ws!==client.ws){send(client.ws,{type:'room_error',message:'هذه الجلسة متصلة بالفعل'});return;}
+  p.ws=client.ws;p.disconnectedAt=null;client.roomId=r.id;client.playerId=p.id;r.lastActivity=now();
+  send(client.ws,{type:'hello',clientId:client.id,resumeToken:p.resumeToken});
+  if(r.started){makeStart(r,p,true);setTimeout(()=>emitState(r),120);}
+  else{send(client.ws,{type:'room_joined',room:publicState(r)});broadcastRoom(r,{type:'room_state',room:publicState(r)});}
+  broadcastRoom(r,{type:'peer_message',payload:{kind:'player_connection',playerId:p.id,connected:true,at:now()}});
 }
-
-function sanitizeUnit(u, index) {
-  if (!u || typeof u !== 'object') return null;
-  const idv=String(u.id||'').slice(0,80); if (!idv) return null;
-  return {
-    id:idv, type:String(u.type||'normal').slice(0,24), infantry:!!u.infantry, builder:!!u.builder,
-    x:clamp(finite(u.x),-MAP_LIMIT,MAP_LIMIT), z:clamp(finite(u.z),-MAP_LIMIT,MAP_LIMIT), y:clamp(finite(u.y),-100,100),
-    rot:finite(u.rot), hp:clamp(finite(u.hp,100),0,100000), maxHp:clamp(finite(u.maxHp,100),1,100000),
-    destroyed:!!u.destroyed,
-    target:u.target&&typeof u.target==='object'?{x:clamp(finite(u.target.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(u.target.z),-MAP_LIMIT,MAP_LIMIT)}:null,
-    guard:u.guard&&typeof u.guard==='object'?{x:clamp(finite(u.guard.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(u.guard.z),-MAP_LIMIT,MAP_LIMIT)}:null
-  };
-}
-function sanitizeBuilding(b, ownerSlot) {
-  if (!b || typeof b!=='object' || !b.id) return null;
-  const type=String(b.type||'building').slice(0,24);
-  // Only the supported player-buildable structures are accepted in online snapshots.
-  if (!['factory','barracks'].includes(type)) return null;
-  const out={id:String(b.id).slice(0,80),type,x:clamp(finite(b.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(b.z),-MAP_LIMIT,MAP_LIMIT),y:clamp(finite(b.y),-100,100),rot:finite(b.rot),hp:clamp(finite(b.hp,1000),0,100000),maxHp:clamp(finite(b.maxHp,1000),1,100000),done:b.done!==false,destroyed:!!b.destroyed,owner:'player',ownerSlot,progress:clamp(finite(b.progress,b.done===false?0:1),0,1)};
-  if (b.production && typeof b.production==='object') out.production={type:String(b.production.type||'unknown').slice(0,30),elapsed:clamp(finite(b.production.elapsed),0,3600000),duration:clamp(finite(b.production.duration,1),1,3600000)};
-  return out;
-}
-function sanitizeState(state) {
-  if (!state || typeof state!=='object') return null;
-  const units=Array.isArray(state.units)?state.units.slice(0,150).map(sanitizeUnit).filter(Boolean):[];
-  const buildings=Array.isArray(state.buildings)?state.buildings.slice(0,80).map(b=>sanitizeBuilding(b,0)).filter(Boolean):[];
-  const oil=Array.isArray(state.oil)?state.oil.slice(0,16).map(r=>({id:String(r.id||'').slice(0,80),x:clamp(finite(r.x),-MAP_LIMIT,MAP_LIMIT),z:clamp(finite(r.z),-MAP_LIMIT,MAP_LIMIT),hp:clamp(finite(r.hp,700),0,100000),maxHp:clamp(finite(r.maxHp,700),1,100000),owner:['player','enemy','none'].includes(r.owner)?r.owner:'none',captureProgress:clamp(finite(r.captureProgress),0,1)})):[];
-  return {money:clamp(Math.floor(finite(state.money)),0,100000000),units,buildings,oil,base:state.base?{hp:clamp(finite(state.base.hp,1600),0,1000000),maxHp:clamp(finite(state.base.maxHp,1600),1,1000000)}:null,__seq:Math.max(0,Math.floor(finite(state.__seq))),__clientTime:finite(state.__clientTime)};
-}
-function receiveGameEvent(c,payload) {
-  const room=c.room;
-  if (!room || !room.started) return;
-  if (!payload || typeof payload!=='object') return;
-  if (payload.kind==='authoritative_snapshot') {
-    const nowMs=now(); const rec=room.snapshots.get(c.id)||{seq:0,state:null,receivedAt:0};
-    if (nowMs-rec.receivedAt<SNAPSHOT_MIN_MS) return;
-    const state=sanitizeState(payload.state); if (!state) return;
-    if (state.__seq<rec.seq) return;
-    // The server stamps building ownership from the authenticated room slot; it never
-    // trusts a client-supplied owner/slot value. This keeps each player's structures distinct.
-    state.playerSlot=c.slot;
-    state.buildings=state.buildings.map(b=>({...b,owner:'player',ownerSlot:c.slot}));
-    rec.seq=state.__seq; rec.state=state; rec.receivedAt=nowMs; room.snapshots.set(c.id,rec); room.lastActivity=nowMs;
-    const packet={tick:Math.floor((nowMs-room.startAt)/50),serverTime:nowMs,players:[]};
-    for (const p of room.players.values()) {
-      const s=room.snapshots.get(p.id); if (!s?.state) continue;
-      packet.players.push({id:p.id,name:p.name,color:p.color,slot:p.slot,state:s.state});
+function mergeClientState(player,incoming){
+  if(!incoming||typeof incoming!=='object')return;
+  const old=player.state||{};
+  const oldBuildings=new Map((old.buildings||[]).map(b=>[b.id,b]));
+  const newBuildings=(Array.isArray(incoming.buildings)?incoming.buildings:[]).map(b=>{
+    const prev=oldBuildings.get(b.id);if(!prev)return b;
+    // Never let a stale tab rewind a construction that the server completed while it was disconnected.
+    if(prev.__serverDone)return {...b,done:true,progress:1,__serverDone:true,__serverBuildStartedAt:prev.__serverBuildStartedAt,__serverBuildDurationMs:prev.__serverBuildDurationMs};
+    if(prev.__serverBuildStartedAt)return {...b,__serverBuildStartedAt:prev.__serverBuildStartedAt,__serverBuildDurationMs:prev.__serverBuildDurationMs,progress:Math.max(num(b.progress),num(prev.progress)),done:!!prev.done||!!b.done};
+    // Production clock lives on the job, not on the building. Preserve that clock across stale snapshots.
+    const oldJob=prev.production;
+    if(oldJob?.__serverProductionStartedAt && b.production && oldJob.type===b.production.type){
+      const incomingStarted=num(b.production.startedAt,0), completedAt=num(prev.__serverLastProduction?.completedAt,0);
+      if(completedAt && incomingStarted && incomingStarted<=completedAt)return {...b,production:null,__serverLastProduction:prev.__serverLastProduction};
+      return {...b,production:{...b.production,__serverProductionStartedAt:oldJob.__serverProductionStartedAt,__serverProductionDurationMs:oldJob.__serverProductionDurationMs,elapsed:Math.max(num(b.production.elapsed),num(oldJob.elapsed))},__serverLastProduction:prev.__serverLastProduction};
     }
-    broadcastRoom(room,{type:'server_state',state:packet});
-    return;
-  }
-  // Generic peer messages are intentionally limited in size and never interpreted as server commands.
-  const raw=JSON.stringify(payload); if (raw.length>50000) return;
-  for (const p of room.players.values()) if (p.id!==c.id) send(p,{type:'peer_message',payload:{...payload,from:c.id}});
-}
-
-function resumeRoom(c,payload) {
-  const room=rooms.get(String(payload.roomId||''));
-  if (!room) return send(c,{type:'room_error',message:'جلسة الغرفة انتهت'});
-  const old=[...room.players.values()].find(p=>p.resumeToken===String(payload.resumeToken||''));
-  if (!old) return send(c,{type:'room_error',message:'رمز الاستعادة غير صالح'});
-  if (old.ws===c.ws) return;
-  if (old.disconnectTimer) {
-    clearTimeout(old.disconnectTimer);
-    old.disconnectTimer=null;
-    room.disconnectTimers.delete(old.id);
-  }
-  // Transfer the player identity to the new WebSocket.
-  clients.delete(old.id);
-  c.id=old.id; c.name=old.name; c.color=old.color; c.slot=old.slot; c.ready=old.ready; c.resumeToken=old.resumeToken; c.room=room;
-  room.players.set(c.id,c); clients.set(c.id,c);
-  if (room.started) {
-    broadcastRoom(room,{type:'opponent_reconnected',playerId:c.id});
-  }
-  send(c,{type:'room_state',room:lobbyRoom(room),resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
-  if (room.started) {
-    const opponent=[...room.players.values()].find(p=>p.id!==c.id);
-    if (opponent) send(c,{type:'game_start',roomId:room.id,playerSlot:c.slot,playerServerId:c.id,opponentServerId:opponent.id,opponentId:opponent.id,seed:room.seed,serverTime:room.startAt,resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION,config:{money:room.money,player:{id:c.id,name:c.name,color:c.color,colorName:'PLAYER'},opponent:{id:opponent.id,name:opponent.name,color:opponent.color,colorName:'OPPONENT'}}});
-  }
-}
-
-function handle(c,msg) {
-  if (!msg || typeof msg!=='object' || typeof msg.type!=='string') return;
-  switch(msg.type) {
-    case 'list_rooms': send(c,{type:'rooms',rooms:listRooms()}); break;
-    case 'create_room': createRoom(c,msg); break;
-    case 'join_room': joinRoom(c,msg); break;
-    case 'leave_room': leaveRoom(c); break;
-    case 'toggle_ready': toggleReady(c); break;
-    case 'set_color': setColor(c,msg); break;
-    case 'resume_room': resumeRoom(c,msg); break;
-    case 'game_event': receiveGameEvent(c,msg.payload); break;
-    case 'ping': send(c,{type:'pong',serverTime:now()}); break;
-    default: send(c,{type:'room_error',message:'أمر غير معروف'});
-  }
-}
-
-const httpServer=http.createServer((req,res)=>{
-  if(req.url==='/health' || req.url==='/'){
-    res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});
-    return res.end(JSON.stringify({ok:true,service:'tactical-rts-online',rooms:rooms.size,clients:clients.size,protocolVersion:PROTOCOL_VERSION,time:now()}));
-  }
-  res.writeHead(404);res.end('Not found');
-});
-
-function sendToConnectedOpponent(room, disconnectedPlayer, msg) {
-  for (const p of room.players.values()) {
-    if (p.id!==disconnectedPlayer.id && p.ws && p.ws.readyState===WebSocket.OPEN) send(p,msg);
-  }
-}
-
-const wss=new WebSocket.Server({server:httpServer,maxPayload:MAX_PAYLOAD,perMessageDeflate:true});
-wss.on('connection',(ws,req)=>{
-  const c={id:id('player'),ws,room:null,slot:0,name:'لاعب',color:'#168cff',ready:false,resumeToken:token(),connectedAt:now(),disconnectedAt:0,disconnectDeadline:0,disconnectTimer:null};
-  clients.set(c.id,c);
-  send(c,{type:'connected',protocolVersion:PROTOCOL_VERSION});
-  send(c,{type:'hello',clientId:c.id,resumeToken:c.resumeToken,protocolVersion:PROTOCOL_VERSION});
-  ws.on('message',(data,isBinary)=>{if(isBinary)return;try{const m=JSON.parse(data.toString());handle(c,m);}catch{send(c,{type:'room_error',message:'بيانات غير صالحة'});}});
-  ws.on('close',()=>{
-    clients.delete(c.id);
-    const room=c.room;if(!room)return;
-    // Keep the slot alive briefly so a mobile browser can reconnect without losing the match.
-    c.ws=null;
-    if(room.started){
-      const disconnectedAt=now();
-      const deadline=disconnectedAt+DISCONNECT_COUNTDOWN_MS;
-      c.disconnectedAt=disconnectedAt;
-      c.disconnectDeadline=deadline;
-      sendToConnectedOpponent(room,c,{type:'opponent_disconnected',playerId:c.id,deadline,remainingMs:DISCONNECT_COUNTDOWN_MS});
-
-      const timer=setTimeout(()=>{
-        if(c.room!==room || c.ws) return;
-        const opponent=[...room.players.values()].find(p=>p.id!==c.id);
-        if(!opponent) return;
-        room.disconnectTimers.delete(c.id);
-        c.disconnectTimer=null;
-        broadcastRoom(room,{type:'match_end',result:{winnerId:opponent.id,loserId:c.id,reason:'disconnect_timeout',timeoutMs:DISCONNECT_COUNTDOWN_MS}});
-        room.started=false;
-        room.startAt=0;
-        room.snapshots.clear();
-        for(const p of room.players.values()) p.ready=false;
-        c.disconnectedAt=0;
-        c.disconnectDeadline=0;
-        broadcastRoom(room,{type:'room_state',room:lobbyRoom(room)});
-      },DISCONNECT_COUNTDOWN_MS);
-      c.disconnectTimer=timer;
-      room.disconnectTimers.set(c.id,timer);
-    } else leaveRoom(c,true);
+    if(prev.__serverLastProduction && b.production){
+      const incomingStarted=num(b.production.startedAt,0);
+      if(incomingStarted && incomingStarted<=num(prev.__serverLastProduction.completedAt,0))return {...b,production:null,__serverLastProduction:prev.__serverLastProduction};
+    }
+    return {...b,__serverLastProduction:prev.__serverLastProduction};
   });
-  ws.on('error',()=>{});
-});
-
-setInterval(()=>{
-  const t=now();
-  for(const [rid,room] of rooms){
-    if(room.players.size===0 || (!room.started && t-room.createdAt>ROOM_TTL_MS)) rooms.delete(rid);
+  const incomingUnits=Array.isArray(incoming.units)?incoming.units.slice():[];
+  const ids=new Set(incomingUnits.map(u=>u.id));
+  for(const u of (player.generatedUnits||[]))if(!ids.has(u.id))incomingUnits.push(u);
+  player.state={...incoming,buildings:newBuildings,units:incomingUnits};
+}
+function advanceOfflineState(player,dt,stamp){
+  const state=player.state;if(!state)return;
+  state.units=Array.isArray(state.units)?state.units:[];state.buildings=Array.isArray(state.buildings)?state.buildings:[];
+  const builders=state.units.filter(u=>u&&u.builder&&!u.destroyed);
+  for(const b of state.buildings){
+    if(!b||b.destroyed)continue;
+    if(!b.done){
+      const durationMs=b.__serverBuildDurationMs||(b.type==='barracks'?12000:20000);
+      let startedAt=Number(b.__serverBuildStartedAt)||0;
+      const builder=builders.sort((a,c)=>Math.hypot(a.x-b.x,a.z-b.z)-Math.hypot(c.x-b.x,c.z-b.z))[0];
+      if(!startedAt&&builder){
+        const rot=num(b.rot),tx=num(b.x)-Math.sin(rot)*18,tz=num(b.z)-Math.cos(rot)*18;
+        const dx=tx-num(builder.x),dz=tz-num(builder.z),dist=Math.hypot(dx,dz);
+        if(dist>4.8){const step=Math.min(dist-4.2,Math.max(.12,5.2*dt/1000));builder.x+=dx/dist*step;builder.z+=dz/dist*step;builder.rot=Math.atan2(dx,dz);builder.target={x:tx,z:tz};}
+        else{startedAt=stamp;b.__serverBuildStartedAt=startedAt;b.__serverBuildDurationMs=durationMs;}
+      }
+      if(startedAt){const progress=Math.max(num(b.progress),Math.min(1,(stamp-startedAt)/durationMs));b.progress=progress;b.__serverBuildStartedAt=startedAt;b.__serverBuildDurationMs=durationMs;if(progress>=1){b.done=true;b.progress=1;b.__serverDone=true;if(builder){builder.target={x:num(b.x)-Math.sin(num(b.rot))*30,z:num(b.z)-Math.cos(num(b.rot))*30};}}}
+    }
+    if(b.done&&b.production){
+      const job=b.production;const durationMs=Math.max(1000,num(job.durationMs,num(job.duration,60)/60*1000));
+      if(!job.__serverProductionStartedAt){job.__serverProductionStartedAt=stamp-Math.max(0,num(job.elapsed))/60*1000;job.__serverProductionDurationMs=durationMs;}
+      const elapsedMs=Math.max(0,stamp-job.__serverProductionStartedAt);job.elapsed=Math.min(num(job.duration,60),elapsedMs/1000*60);job.durationMs=durationMs;
+      if(elapsedMs>=durationMs){
+        const rot=num(b.rot),type=String(job.type||'normal'),startedAt=num(job.startedAt,job.__serverProductionStartedAt),id=`server-production:${player.id}:${b.id}:${startedAt}`;
+        const already=(player.generatedUnits||[]).some(u=>u.id===id);
+        if(!already){
+          const forward=25;const unit={id,type,infantry:type==='infantry',builder:false,x:num(b.x)+Math.sin(rot)*forward,z:num(b.z)+Math.cos(rot)*forward,y:num(b.y),rot,hp:type==='rocket'?650:500,maxHp:type==='rocket'?650:500,destroyed:false,target:null,serverProduced:true};
+          player.generatedUnits=player.generatedUnits||[];player.generatedUnits.push(unit);if(player.generatedUnits.length>200)player.generatedUnits=player.generatedUnits.slice(-200);
+          state.units.push(unit);
+        }
+        b.__serverLastProduction={type,startedAt,completedAt:stamp};b.production=null;
+      }
+    }
   }
-},60000).unref();
-
-httpServer.listen(PORT,()=>console.log(`Tactical RTS server listening on ${PORT}`));
+}
+function onMessage(client,msg){
+  const type=String(msg.type||'');
+  if(type==='list_rooms'){roomList(client.ws);return;}
+  if(type==='create_room'){if(client.roomId){const old=roomOf(client);if(old&&!old.started)detach(client.ws,'replace_room');}createRoom(client,msg);return;}
+  if(type==='join_room'){joinRoom(client,msg);return;}
+  if(type==='resume_room'){resumeRoom(client,msg);return;}
+  const r=roomOf(client),p=r&&r.players.find(x=>x.id===client.playerId);
+  if(type==='set_color'&&r&&p){p.color=cleanColor(msg.color,p.color);broadcastRoom(r,{type:'room_state',room:publicState(r)});return;}
+  if(type==='toggle_ready'&&r&&!r.started&&p){p.ready=!p.ready;broadcastRoom(r,{type:'room_state',room:publicState(r)});startIfReady(r);return;}
+  if(type==='leave_room'&&r&&p){if(r.started){p.ws=null;p.disconnectedAt=now();client.roomId=null;client.playerId=null;broadcastRoom(r,{type:'peer_message',payload:{kind:'player_connection',playerId:p.id,connected:false,reason:'left',at:now()}});emitState(r);}else detach(client.ws,'left');return;}
+  if(type==='game_event'&&r&&r.started&&p){const payload=msg.payload;if(!payload||typeof payload!=='object')return;if(payload.kind==='authoritative_snapshot'&&payload.state){mergeClientState(p,payload.state);p.lastSnapshotAt=now();r.lastActivity=now();emitState(r);}else if(payload.kind==='player_command'){broadcastRoom(r,{type:'peer_message',payload:{...payload,playerId:p.id,at:now()}});}return;}
+}
+const server=http.createServer((req,res)=>{if(req.url==='/'||req.url==='/health'){res.writeHead(200,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify({ok:true,service:'control-battle-sync',rooms:rooms.size,clients:clients.size}));return;}res.writeHead(404);res.end('Not found');});
+const wss=new WebSocket.Server({server,maxPayload:1024*1024});
+wss.on('connection',ws=>{const c={id:uid('c_'),ws,roomId:null,playerId:null};clients.set(ws,c);send(ws,{type:'hello',clientId:c.id});ws.on('message',raw=>{let m;try{m=JSON.parse(raw.toString());}catch(_){return;}try{onMessage(c,m);}catch(e){console.error('message error',e);send(ws,{type:'room_error',message:'حدث خطأ في معالجة طلب الشبكة'});}});ws.on('close',()=>detach(ws,'disconnect'));ws.on('error',()=>{});});
+setInterval(()=>{const stamp=now();for(const r of rooms.values()){if(r.started){r.tick++;for(const p of r.players)if(!p.ws)advanceOfflineState(p,TICK_MS,stamp);emitState(r);}else if(stamp-r.lastActivity>ROOM_TTL_MS&&!r.players.some(p=>p.ws))rooms.delete(r.id);for(const p of r.players){if(!p.ws&&p.disconnectedAt&&stamp-p.disconnectedAt>DISCONNECT_GRACE_MS){/* retain match state; a later reconnect may still resume until room TTL */}}}},TICK_MS);
+server.listen(PORT,()=>console.log(`CONTROL BATTLE sync server listening on ${PORT}`));
